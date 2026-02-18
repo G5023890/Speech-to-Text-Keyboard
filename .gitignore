@@ -1,0 +1,8 @@
+.codex/
+.build/
+dist/
+.runtime/
+.checkpoints/
+.DS_Store
+**/.DS_Store
+models/*.bin
