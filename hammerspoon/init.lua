@@ -1,4 +1,4 @@
-local projectRoot = "/Users/grigorymordokhovich/Documents/Develop/Voice input"
+local projectRoot = os.getenv("VOICE_INPUT_PROJECT_DIR") or (os.getenv("HOME") .. "/Documents/Develop/Voice input")
 local scriptPath = projectRoot .. "/scripts/ptt_whisper.sh"
 
 local isRecording = false

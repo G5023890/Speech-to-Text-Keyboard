@@ -66,9 +66,6 @@ enum TranscribeModel: String, CaseIterable {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let projectRoot = "/Users/grigorymordokhovich/Documents/Develop/Voice input"
-    private let menuBarIconPath = "/Users/grigorymordokhovich/Downloads/taskbar_Mic.png"
-    private let recordingPath = "/Users/grigorymordokhovich/Documents/Develop/Voice input/.runtime/ptt_input.wav"
     private let appSupportSubdir = "Voice Input"
 
     private var statusItem: NSStatusItem?
@@ -117,7 +114,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var legacyModelsDirectoryPath: String {
-        return "\(projectRoot)/models"
+        return "\(NSHomeDirectory())/Documents/Develop/Voice input/models"
+    }
+
+    private var runtimeDirectoryPath: String {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent(appSupportSubdir, isDirectory: true)
+            .appendingPathComponent(".runtime", isDirectory: true).path
+    }
+
+    private var recordingPath: String {
+        return "\(runtimeDirectoryPath)/ptt_input.wav"
+    }
+
+    private var transcribeScriptPath: String? {
+        if let bundled = Bundle.main.path(forResource: "ptt_whisper", ofType: "sh"),
+           FileManager.default.isExecutableFile(atPath: bundled)
+        {
+            return bundled
+        }
+        let local = "\(FileManager.default.currentDirectoryPath)/scripts/ptt_whisper.sh"
+        if FileManager.default.isExecutableFile(atPath: local) {
+            return local
+        }
+        return nil
     }
 
     private func ensureModelsDirectoryReady() {
@@ -149,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
             if let image = loadMenuBarIcon() {
-                image.size = NSSize(width: 18, height: 18)
+                image.size = NSSize(width: 16.2, height: 16.2)
                 image.isTemplate = true
                 menuBarIconImage = image
                 button.image = image
@@ -263,9 +283,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadMenuBarIcon() -> NSImage? {
-        if let image = NSImage(contentsOfFile: menuBarIconPath) {
-            return image
-        }
         if let bundlePath = Bundle.main.path(forResource: "taskbar_Mic", ofType: "png"),
            let image = NSImage(contentsOfFile: bundlePath)
         {
@@ -385,7 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isRecording = true
         showStatus("Recording...")
 
-        let runtimeDir = "\(projectRoot)/.runtime"
+        let runtimeDir = runtimeDirectoryPath
         try? FileManager.default.createDirectory(atPath: runtimeDir, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(atPath: recordingPath)
 
@@ -449,7 +466,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func runTranscribe(audioPath: String, completion: @escaping (Int32, String, String) -> Void) {
-        let scriptPath = "\(projectRoot)/scripts/ptt_whisper.sh"
+        guard let scriptPath = transcribeScriptPath else {
+            completion(1, "", "Transcription script not found.")
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         let quotedScript = "\"\(scriptPath)\""
@@ -458,6 +478,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var env = ProcessInfo.processInfo.environment
         env["WHISPER_MODEL_DIR"] = modelsDirectoryPath
         env["WHISPER_MODEL"] = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
+        env["WHISPER_APP_SUPPORT_DIR"] = "\(NSHomeDirectory())/Library/Application Support/\(appSupportSubdir)"
+        env["WHISPER_RUNTIME_DIR"] = runtimeDirectoryPath
         process.environment = env
 
         let stdout = Pipe()
@@ -502,7 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func clearTransientData(clearClipboard: Bool) {
-        let runtimeDir = "\(projectRoot)/.runtime"
+        let runtimeDir = runtimeDirectoryPath
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/ptt_input.txt")
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/ptt_input.wav")
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/recording.pid")
@@ -579,9 +601,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setModelProgress(0, detail: "старт")
         showStatus("Updating models...")
 
-        let scriptPath = "\(projectRoot)/scripts/ptt_whisper.sh"
+        guard let scriptPath = transcribeScriptPath else {
+            modelUpdateInProgress = false
+            modelUpdateItem?.isEnabled = false
+            clearModelProgress()
+            endActivity()
+            showStatus("Model update failed")
+            showErrorAlert(title: "Model update failed", text: "Update script not found.")
+            return
+        }
         let scriptEnv = [
-            "WHISPER_MODEL_DIR": modelsDirectoryPath
+            "WHISPER_MODEL_DIR": modelsDirectoryPath,
+            "WHISPER_APP_SUPPORT_DIR": "\(NSHomeDirectory())/Library/Application Support/\(appSupportSubdir)",
+            "WHISPER_RUNTIME_DIR": runtimeDirectoryPath
         ]
         let turboCommand = """
         "\(scriptPath)" download-turbo-model

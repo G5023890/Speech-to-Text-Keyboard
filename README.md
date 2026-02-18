@@ -7,7 +7,7 @@ Local push-to-talk speech-to-text for macOS:
 
 ## Checkpoints
 
-- active restore checkpoint: `/Users/grigorymordokhovich/Documents/Develop/Voice input/.checkpoints/Stage-1.4`
+- active restore checkpoint: `./.checkpoints/Stage-1.4`
 
 ## Install
 
@@ -18,7 +18,7 @@ brew install ffmpeg hammerspoon whisper-cpp
 ## Project setup
 
 ```bash
-cd "/Users/grigorymordokhovich/Documents/Develop/Voice input"
+cd "/path/to/Voice input"
 chmod +x scripts/ptt_whisper.sh
 scripts/ptt_whisper.sh download-model
 scripts/ptt_whisper.sh download-fast-model
@@ -26,8 +26,8 @@ scripts/ptt_whisper.sh download-turbo-model
 ```
 
 Current local models:
-- `/Users/grigorymordokhovich/Library/Application Support/Voice Input/models/ggml-medium-q5_0.bin`
-- `/Users/grigorymordokhovich/Library/Application Support/Voice Input/models/ggml-small-q5_1.bin`
+- `~/Library/Application Support/Voice Input/models/ggml-medium-q5_0.bin`
+- `~/Library/Application Support/Voice Input/models/ggml-small-q5_1.bin`
 
 ## Hotkey
 
@@ -45,7 +45,7 @@ Current local models:
 Build and install app bundle:
 
 ```bash
-cd "/Users/grigorymordokhovich/Documents/Develop/Voice input"
+cd "/path/to/Voice input"
 ./scripts/build_and_install_app.sh
 ```
 
@@ -79,7 +79,7 @@ If you want explicit single language mode, set `WHISPER_LANGUAGE=ru`.
 ## Term glossary (recommended)
 
 To improve recognition of names/terms, edit:
-- `/Users/grigorymordokhovich/Documents/Develop/Voice input/config/glossary.txt`
+- `./config/glossary.txt`
 
 Rules:
 - one term per line

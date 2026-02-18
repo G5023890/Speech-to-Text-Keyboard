@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/grigorymordokhovich/Documents/Develop/Voice input"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${SCRIPT_DIR}"
 HAMMERSPOON_INIT="${HOME}/.hammerspoon/init.lua"
 INSTALLED_APP="/Applications/Voice Input.app"
 REMOVE_BREW=0
@@ -11,7 +12,7 @@ usage() {
 Usage: ./Uninstall [--with-brew]
 
 Removes files created for this local voice-input setup:
-- project files in "/Users/grigorymordokhovich/Documents/Develop/Voice input"
+- project files in the directory where this script is located
 - Hammerspoon config "~/.hammerspoon/init.lua"
 
 Optional:

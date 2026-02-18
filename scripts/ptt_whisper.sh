@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME_DIR="${ROOT_DIR}/.runtime"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WHISPER_APP_SUPPORT_DIR="${WHISPER_APP_SUPPORT_DIR:-${HOME}/Library/Application Support/Voice Input}"
+RUNTIME_DIR="${WHISPER_RUNTIME_DIR:-${WHISPER_APP_SUPPORT_DIR}/.runtime}"
 AUDIO_FILE="${RUNTIME_DIR}/ptt_input.wav"
 PID_FILE="${RUNTIME_DIR}/recording.pid"
 TRANSCRIPT_FILE="${RUNTIME_DIR}/ptt_input.txt"
@@ -10,7 +12,6 @@ TRANSCRIPT_FILE="${RUNTIME_DIR}/ptt_input.txt"
 FFMPEG_BIN="${FFMPEG_BIN:-ffmpeg}"
 WHISPER_BIN="${WHISPER_BIN:-whisper-cli}"
 WHISPER_PROFILE="${WHISPER_PROFILE:-balanced}" # fast | balanced | quality
-WHISPER_APP_SUPPORT_DIR="${WHISPER_APP_SUPPORT_DIR:-${HOME}/Library/Application Support/Voice Input}"
 MODEL_DIR="${WHISPER_MODEL_DIR:-${WHISPER_APP_SUPPORT_DIR}/models}"
 MODEL_SMALL_Q5="${MODEL_DIR}/ggml-small-q5_1.bin"
 MODEL_SMALL="${MODEL_DIR}/ggml-small.bin"
@@ -57,7 +58,11 @@ WHISPER_THREADS="${WHISPER_THREADS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 WHISPER_VAD="${WHISPER_VAD:-0}"
 WHISPER_BEAM_SIZE="${WHISPER_BEAM_SIZE:-1}"
 WHISPER_BEST_OF="${WHISPER_BEST_OF:-1}"
-GLOSSARY_FILE="${GLOSSARY_FILE:-${ROOT_DIR}/config/glossary.txt}"
+DEFAULT_GLOSSARY_FILE="${SCRIPT_DIR}/config/glossary.txt"
+if [[ ! -f "${DEFAULT_GLOSSARY_FILE}" ]]; then
+  DEFAULT_GLOSSARY_FILE="${ROOT_DIR}/config/glossary.txt"
+fi
+GLOSSARY_FILE="${GLOSSARY_FILE:-${DEFAULT_GLOSSARY_FILE}}"
 
 ensure_runtime() {
   mkdir -p "${RUNTIME_DIR}"

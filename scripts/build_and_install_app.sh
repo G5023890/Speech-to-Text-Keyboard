@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/grigorymordokhovich/Documents/Develop/Voice input"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_DIR"
 
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-Voice Input}"
@@ -10,7 +11,7 @@ BUNDLE_ID="${BUNDLE_ID:-com.grigorym.voiceinput}"
 APP_DIR="${APP_DIR:-dist/${APP_DISPLAY_NAME}.app}"
 INSTALL_DIR="${INSTALL_DIR:-/Applications/${APP_DISPLAY_NAME}.app}"
 LEGACY_INSTALL_DIR="${LEGACY_INSTALL_DIR:-/Applications/SelectedTextOverlay.app}"
-ICON_SOURCE="${ICON_SOURCE:-/Users/grigorymordokhovich/Documents/Develop/Voice input/assets/AppIcon.icns}"
+ICON_SOURCE="${ICON_SOURCE:-$PROJECT_DIR/assets/AppIcon.icns}"
 SKIP_SIGN="${SKIP_SIGN:-0}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 RESOLVED_SIGN_IDENTITY=""
@@ -143,6 +144,14 @@ cp "$BIN_PATH" "$APP_STAGE/Contents/MacOS/${EXECUTABLE_NAME}"
 chmod +x "$APP_STAGE/Contents/MacOS/${EXECUTABLE_NAME}"
 if [[ -f "$PROJECT_DIR/Resources/taskbar_Mic.png" ]]; then
   /usr/bin/ditto --norsrc "$PROJECT_DIR/Resources/taskbar_Mic.png" "$APP_STAGE/Contents/Resources/taskbar_Mic.png"
+fi
+if [[ -f "$PROJECT_DIR/scripts/ptt_whisper.sh" ]]; then
+  /usr/bin/ditto --norsrc "$PROJECT_DIR/scripts/ptt_whisper.sh" "$APP_STAGE/Contents/Resources/ptt_whisper.sh"
+  chmod +x "$APP_STAGE/Contents/Resources/ptt_whisper.sh"
+fi
+if [[ -f "$PROJECT_DIR/config/glossary.txt" ]]; then
+  mkdir -p "$APP_STAGE/Contents/Resources/config"
+  /usr/bin/ditto --norsrc "$PROJECT_DIR/config/glossary.txt" "$APP_STAGE/Contents/Resources/config/glossary.txt"
 fi
 
 if [[ -n "$ICON_PATH" ]]; then

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/grigorymordokhovich/Documents/Develop/Voice input"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SNAPSHOT_DIR="${PROJECT_DIR}/.checkpoints/Stage-1.4"
 
 if [[ ! -d "${SNAPSHOT_DIR}" ]]; then
