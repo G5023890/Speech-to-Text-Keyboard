@@ -45,6 +45,7 @@ enum HotkeyMode: String, CaseIterable {
 enum TranscribeModel: String, CaseIterable {
     case mediumQ5
     case smallQ5
+    case largeV3TurboQ5
 
     var title: String {
         switch self {
@@ -52,6 +53,8 @@ enum TranscribeModel: String, CaseIterable {
             return "medium-q5_0"
         case .smallQ5:
             return "small-q5_1"
+        case .largeV3TurboQ5:
+            return "large-v3-turbo-q5_0"
         }
     }
 
@@ -61,11 +64,23 @@ enum TranscribeModel: String, CaseIterable {
             return "ggml-medium-q5_0.bin"
         case .smallQ5:
             return "ggml-small-q5_1.bin"
+        case .largeV3TurboQ5:
+            return "ggml-large-v3-turbo-q5_0.bin"
         }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private struct ClipboardSnapshot {
+        let items: [[String: Data]]
+    }
+
+    private struct ClipboardRestoreState {
+        let snapshot: ClipboardSnapshot
+        let expectedChangeCount: Int
+        let injectedText: String
+    }
+
     private let appSupportSubdir = "Voice Input"
 
     private var statusItem: NSStatusItem?
@@ -92,8 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateCheckInProgress = false
     private var modelUpdateAvailable = false
     private var activityCounter = 0
-    private let managedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin"]
-    private let legacyManagedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-medium.bin", "ggml-small.bin"]
+    private var clipboardRestoreState: ClipboardRestoreState?
+    private let managedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-large-v3-turbo-q5_0.bin"]
+    private let legacyManagedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-medium.bin", "ggml-small.bin"]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -509,8 +525,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
         let board = NSPasteboard.general
+        let snapshot = snapshotClipboard(board)
         board.clearContents()
         board.setString(text, forType: .string)
+        clipboardRestoreState = ClipboardRestoreState(snapshot: snapshot, expectedChangeCount: board.changeCount, injectedText: text)
 
         let source = CGEventSource(stateID: .combinedSessionState)
         let vKey: CGKeyCode = 9
@@ -523,15 +541,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    private func snapshotClipboard(_ board: NSPasteboard) -> ClipboardSnapshot {
+        let items = (board.pasteboardItems ?? []).map { item in
+            var map: [String: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    map[type.rawValue] = data
+                }
+            }
+            return map
+        }
+        return ClipboardSnapshot(items: items)
+    }
+
+    private func restoreClipboardIfNeeded() {
+        guard let state = clipboardRestoreState else {
+            return
+        }
+        let board = NSPasteboard.general
+        defer { clipboardRestoreState = nil }
+
+        // If user/app changed clipboard after our auto-paste, do not overwrite it.
+        guard board.changeCount == state.expectedChangeCount else {
+            return
+        }
+        let currentText = board.string(forType: .string) ?? ""
+        guard currentText == state.injectedText else {
+            return
+        }
+
+        board.clearContents()
+        if state.snapshot.items.isEmpty {
+            return
+        }
+
+        let restoredItems: [NSPasteboardItem] = state.snapshot.items.map { saved in
+            let item = NSPasteboardItem()
+            for (typeRaw, data) in saved {
+                item.setData(data, forType: NSPasteboard.PasteboardType(typeRaw))
+            }
+            return item
+        }
+        board.writeObjects(restoredItems)
+    }
+
     private func clearTransientData(clearClipboard: Bool) {
         let runtimeDir = runtimeDirectoryPath
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/ptt_input.txt")
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/ptt_input.wav")
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/recording.pid")
         if clearClipboard {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                NSPasteboard.general.clearContents()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.restoreClipboardIfNeeded()
             }
+        } else {
+            clipboardRestoreState = nil
         }
     }
 
@@ -634,19 +698,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.checkForUpdates()
                 return
             }
-            self.setModelProgress(50, detail: "small-q5_1")
+            self.setModelProgress(33, detail: "small-q5_1")
 
             let fastCommand = """
             "\(scriptPath)" download-fast-model
             """
             self.runShell(command: fastCommand, environment: scriptEnv) { [weak self] secondCode, secondOutput in
                 guard let self else { return }
-                self.modelUpdateInProgress = false
-                self.endActivity()
 
                 guard secondCode == 0 else {
+                    self.modelUpdateInProgress = false
                     self.modelUpdateItem?.isEnabled = false
                     self.clearModelProgress()
+                    self.endActivity()
                     self.showStatus("Model update failed")
                     let alert = NSAlert()
                     alert.messageText = "Model update failed"
@@ -657,12 +721,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
-                self.setModelProgress(100, detail: "medium-q5_0")
-                self.modelUpdateItem?.isEnabled = false
-                self.showStatus("Models updated")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                    self?.clearModelProgress()
-                    self?.checkForUpdates()
+                self.setModelProgress(66, detail: "medium-q5_0")
+                let largeCommand = """
+                "\(scriptPath)" download-large-v3-turbo-model
+                """
+                self.runShell(command: largeCommand, environment: scriptEnv) { [weak self] thirdCode, thirdOutput in
+                    guard let self else { return }
+                    self.modelUpdateInProgress = false
+                    self.endActivity()
+
+                    guard thirdCode == 0 else {
+                        self.modelUpdateItem?.isEnabled = false
+                        self.clearModelProgress()
+                        self.showStatus("Model update failed")
+                        let alert = NSAlert()
+                        alert.messageText = "Model update failed"
+                        alert.informativeText = thirdOutput.isEmpty ? "Check internet connection and try again." : thirdOutput
+                        alert.alertStyle = .warning
+                        alert.runModal()
+                        self.checkForUpdates()
+                        return
+                    }
+
+                    self.setModelProgress(100, detail: "large-v3-turbo-q5_0")
+                    self.modelUpdateItem?.isEnabled = false
+                    self.showStatus("Models updated")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                        self?.clearModelProgress()
+                        self?.checkForUpdates()
+                    }
                 }
             }
         }
@@ -699,7 +786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func confirmAndUpdateModels() {
         let alert = NSAlert()
         alert.messageText = "Update models?"
-        alert.informativeText = "This will download/update local models (small-q5_1, medium-q5_0, medium). Continue?"
+        alert.informativeText = "This will download/update local models (small-q5_1, medium-q5_0, large-v3-turbo-q5_0). Continue?"
         alert.addButton(withTitle: "Update")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .informational

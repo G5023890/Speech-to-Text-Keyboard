@@ -23,11 +23,13 @@ chmod +x scripts/ptt_whisper.sh
 scripts/ptt_whisper.sh download-model
 scripts/ptt_whisper.sh download-fast-model
 scripts/ptt_whisper.sh download-turbo-model
+scripts/ptt_whisper.sh download-large-v3-turbo-model
 ```
 
 Current local models:
 - `~/Library/Application Support/Voice Input/models/ggml-medium-q5_0.bin`
 - `~/Library/Application Support/Voice Input/models/ggml-small-q5_1.bin`
+- `~/Library/Application Support/Voice Input/models/ggml-large-v3-turbo-q5_0.bin`
 
 ## Hotkey
 
@@ -38,7 +40,7 @@ Current local models:
   - `Shift+Fn`
   - `Fn`
 - choose in menu bar: `Voice Input -> Hotkey`
-- transcription model is selectable in menu bar: `Voice Input -> Модель` (`medium-q5_0` / `small-q5_1`)
+- transcription model is selectable in menu bar: `Voice Input -> Модель` (`medium-q5_0` / `small-q5_1` / `large-v3-turbo-q5_0`)
 
 ## Native macOS app build
 

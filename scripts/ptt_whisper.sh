@@ -193,7 +193,7 @@ download_model() {
 }
 
 usage() {
-  echo "Usage: $0 {start|stop|transcribe <audio_file>|download-model|download-fast-model|download-turbo-model}" >&2
+  echo "Usage: $0 {start|stop|transcribe <audio_file>|download-model|download-fast-model|download-turbo-model|download-large-v3-turbo-model}" >&2
   exit 1
 }
 
@@ -215,6 +215,9 @@ download-fast-model)
   ;;
 download-turbo-model)
   WHISPER_MODEL="${MODEL_DIR}/ggml-small-q5_1.bin" download_model
+  ;;
+download-large-v3-turbo-model)
+  WHISPER_MODEL="${MODEL_DIR}/ggml-large-v3-turbo-q5_0.bin" download_model
   ;;
 *)
   usage
