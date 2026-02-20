@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import Foundation
+import QuartzCore
 import ServiceManagement
 
 enum HotkeyMode: String, CaseIterable {
@@ -86,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var menuBarIconImage: NSImage?
     private var loadingIndicator: NSProgressIndicator?
+    private var recordingHaloWindow: NSWindow?
+    private var recordingHaloLayer: CAShapeLayer?
+    private var recordingHaloHighlightLayer: CAShapeLayer?
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var isRecording = false
@@ -173,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopRecordingHalo()
         if let globalFlagsMonitor {
             NSEvent.removeMonitor(globalFlagsMonitor)
         }
@@ -416,6 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         isRecording = true
+        startRecordingHalo()
         showStatus("Recording...")
 
         let runtimeDir = runtimeDirectoryPath
@@ -436,10 +442,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recorder?.prepareToRecord()
             if recorder?.record() != true {
                 isRecording = false
+                stopRecordingHalo()
                 showStatus("Failed to start recording")
             }
         } catch {
             isRecording = false
+            stopRecordingHalo()
             showStatus("Recorder error")
         }
     }
@@ -449,6 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         isRecording = false
+        stopRecordingHalo()
         recorder?.stop()
         recorder = nil
         showStatus("Transcribing...")
@@ -605,6 +614,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func startRecordingHalo() {
+        return
+    }
+
+    private func stopRecordingHalo() {
+        recordingHaloLayer?.removeAllAnimations()
+        recordingHaloHighlightLayer?.removeAllAnimations()
+        recordingHaloLayer = nil
+        recordingHaloHighlightLayer = nil
+        recordingHaloWindow?.orderOut(nil)
+        recordingHaloWindow = nil
+    }
+
     private func beginActivity() {
         activityCounter += 1
         updateMenuBarLoadingState()
@@ -624,16 +646,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = nil
             button.title = ""
             loadingIndicator?.startAnimation(nil)
+            return
+        }
+
+        loadingIndicator?.stopAnimation(nil)
+        if let image = menuBarIconImage {
+            button.title = ""
+            button.image = image
+            button.imagePosition = .imageOnly
         } else {
-            if let image = menuBarIconImage {
-                button.title = ""
-                button.image = image
-                button.imagePosition = .imageOnly
-            } else {
-                button.image = nil
-                button.title = "Mic"
-            }
-            loadingIndicator?.stopAnimation(nil)
+            button.image = nil
+            button.title = "Mic"
         }
     }
 

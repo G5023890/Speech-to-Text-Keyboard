@@ -1,5 +1,7 @@
 # Voice Input (Menu Bar PTT, ru+en+he)
 
+Release: `1.0`
+
 Local push-to-talk speech-to-text for macOS:
 - hold selected hotkey combo to record
 - release key to transcribe with local `whisper.cpp`
@@ -113,3 +115,9 @@ WHISPER_THREADS=6
 WHISPER_BEAM_SIZE=1
 WHISPER_BEST_OF=1
 ```
+
+## License
+
+SPDX-License-Identifier: Apache-2.0
+
+See `/Users/grigorymordokhovich/Documents/Develop/Voice input/LICENSE`.
