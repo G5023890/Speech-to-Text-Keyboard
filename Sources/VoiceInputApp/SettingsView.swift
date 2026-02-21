@@ -7,6 +7,15 @@ struct ModelOption: Identifiable, Hashable {
     let isRecommended: Bool
 }
 
+struct SettingsInstalledModel: Identifiable, Hashable {
+    let id: String
+    let fileName: String
+    let displayName: String
+    let sizeText: String
+    let isManaged: Bool
+    let isActive: Bool
+}
+
 struct SettingsStats: Equatable {
     var todaySeconds: Double
     var weekSeconds: Double
@@ -42,6 +51,9 @@ struct SettingsSnapshot: Equatable {
     var stats: SettingsStats
     var isCheckingUpdates: Bool
     var isUpdatingModels: Bool
+    var installedModels: [SettingsInstalledModel]
+    var modelManagementStatus: String
+    var isManagingModels: Bool
 
     static let mock = SettingsSnapshot(
         launchAtLoginEnabled: true,
@@ -53,7 +65,10 @@ struct SettingsSnapshot: Equatable {
         lastCheckStatus: "Обновлений нет",
         stats: .mock,
         isCheckingUpdates: false,
-        isUpdatingModels: false
+        isUpdatingModels: false,
+        installedModels: [],
+        modelManagementStatus: "Готово",
+        isManagingModels: false
     )
 }
 
@@ -64,6 +79,9 @@ struct SettingsActions {
     var setModel: (String) -> Void
     var checkUpdates: (@escaping (SettingsSnapshot) -> Void) -> Void
     var updateModels: (@escaping (SettingsSnapshot) -> Void) -> Void
+    var addModelFromURL: (String, @escaping (SettingsSnapshot) -> Void) -> Void
+    var deleteModel: (String, @escaping (SettingsSnapshot) -> Void) -> Void
+    var openModelsFolder: () -> Void
     var resetStats: () -> Void
 
     static let mock = SettingsActions(
@@ -73,6 +91,9 @@ struct SettingsActions {
         setModel: { _ in },
         checkUpdates: { completion in completion(.mock) },
         updateModels: { completion in completion(.mock) },
+        addModelFromURL: { _, completion in completion(.mock) },
+        deleteModel: { _, completion in completion(.mock) },
+        openModelsFolder: {},
         resetStats: {}
     )
 }
@@ -81,29 +102,16 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var snapshot: SettingsSnapshot
 
     let hotkeyOptions: [HotkeyMode]
-    let modelOptions: [ModelOption]
 
     private let actions: SettingsActions
 
     init(
         actions: SettingsActions = .mock,
-        modelOptions: [ModelOption] = SettingsViewModel.defaultModelOptions,
         hotkeyOptions: [HotkeyMode] = HotkeyMode.allCases
     ) {
         self.actions = actions
-        self.modelOptions = modelOptions
         self.hotkeyOptions = hotkeyOptions
         self.snapshot = actions.snapshot()
-    }
-
-    static let defaultModelOptions: [ModelOption] = [
-        ModelOption(id: TranscribeModel.smallQ5.rawValue, title: "Быстрая", isRecommended: false),
-        ModelOption(id: TranscribeModel.mediumQ5.rawValue, title: "Сбалансированная", isRecommended: true),
-        ModelOption(id: TranscribeModel.largeV3TurboQ5.rawValue, title: "Максимальное качество", isRecommended: false)
-    ]
-
-    func isModelRecommended(_ modelID: String) -> Bool {
-        modelOptions.first(where: { $0.id == modelID })?.isRecommended == true
     }
 
     func reload() {
@@ -125,37 +133,16 @@ final class SettingsViewModel: ObservableObject {
         reload()
     }
 
-    func checkUpdates() {
-        guard !snapshot.isCheckingUpdates, !snapshot.isUpdatingModels else {
-            return
-        }
-        actions.checkUpdates { [weak self] updated in
-            DispatchQueue.main.async {
-                self?.snapshot = updated
-            }
-        }
-    }
-
-    func updateModels() {
-        guard !snapshot.isCheckingUpdates, !snapshot.isUpdatingModels else {
-            return
-        }
-        let actions = self.actions
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let updated = await withCheckedContinuation { continuation in
-                actions.updateModels { snapshot in
-                    continuation.resume(returning: snapshot)
-                }
-            }
-            self.snapshot = updated
-        }
-    }
-
     func resetStats() {
         actions.resetStats()
         reload()
     }
+}
+
+private enum SettingsTab: Hashable {
+    case general
+    case models
+    case stats
 }
 
 struct SettingsView: View {
@@ -165,10 +152,53 @@ struct SettingsView: View {
     @AppStorage("voice_input_hotkey_mode") private var hotkey = HotkeyMode.shiftOption.rawValue
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
 
-    private let pickerWidth: CGFloat = 260
-    private let controlsColumnWidth: CGFloat = 360
+    @State private var selectedTab: SettingsTab = .general
+    @StateObject private var modelManager: ModelManager
+
+    private let pickerWidth: CGFloat = 280
+    private let controlsColumnWidth: CGFloat = 380
+
+    init(viewModel: SettingsViewModel) {
+        self.viewModel = viewModel
+        _modelManager = StateObject(wrappedValue: ModelManager(onActiveModelChanged: { modelID in
+            viewModel.applyModel(modelID)
+        }))
+    }
 
     var body: some View {
+        TabView(selection: $selectedTab) {
+            generalTab
+                .tabItem {
+                    Label("Общие", systemImage: "gearshape")
+                }
+                .tag(SettingsTab.general)
+
+            ModelsSettingsView(manager: modelManager)
+                .tabItem {
+                    Label("Модели", systemImage: "cpu")
+                }
+                .tag(SettingsTab.models)
+
+            statsTab
+                .tabItem {
+                    Label("Статистика", systemImage: "chart.bar")
+                }
+                .tag(SettingsTab.stats)
+        }
+        .frame(minWidth: 860, minHeight: 680)
+        .onAppear {
+            viewModel.reload()
+            syncStorageFromSnapshot()
+            modelManager.refresh()
+            modelManager.syncExternalSelection(viewModel.snapshot.selectedModelID)
+        }
+        .onReceive(viewModel.$snapshot) { _ in
+            syncStorageFromSnapshot()
+            modelManager.syncExternalSelection(viewModel.snapshot.selectedModelID)
+        }
+    }
+
+    private var generalTab: some View {
         Form {
             Section("Общие") {
                 Toggle("Запуск при входе", isOn: Binding(
@@ -195,65 +225,26 @@ struct SettingsView: View {
                     .controlSize(.large)
                     .frame(width: pickerWidth)
                 }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    settingsRow(label: "Модель") {
-                        HStack(spacing: 8) {
-                            Picker("", selection: Binding(
-                                get: { selectedModelID },
-                                set: { newValue in
-                                    selectedModelID = newValue
-                                    viewModel.applyModel(newValue)
-                                }
-                            )) {
-                                ForEach(viewModel.modelOptions) { option in
-                                    Text(option.title).tag(option.id)
-                                }
-                            }
-                            .labelsHidden()
-                            .controlSize(.large)
-                            .frame(width: pickerWidth)
-
-                            if viewModel.isModelRecommended(selectedModelID) {
-                                Text("Рекомендуется")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
-                                    .foregroundStyle(Color.accentColor)
-                            }
-                        }
-                    }
-
-                    Text("Установлено: \(viewModel.snapshot.installedModelCount) модели • Обновлений \(viewModel.snapshot.updatesAvailable ? "есть" : "нет")")
-                        .foregroundStyle(.secondary)
-                }
             }
 
-            Section("Модели") {
-                HStack(alignment: .center, spacing: 12) {
-                    Text(viewModel.snapshot.lastCheckStatus)
+            Section("Текущая модель") {
+                HStack {
+                    Text("Активная")
+                    Spacer()
+                    Text(modelManager.activeModelDescriptor?.fileName ?? "Не выбрана")
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-
-                    Spacer(minLength: 12)
-
-                    HStack(spacing: 8) {
-                        Button("Проверить обновления") {
-                            viewModel.checkUpdates()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.snapshot.isCheckingUpdates || viewModel.snapshot.isUpdatingModels)
-
-                        Button("Обновить") {
-                            viewModel.updateModels()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!viewModel.snapshot.updatesAvailable || viewModel.snapshot.isCheckingUpdates || viewModel.snapshot.isUpdatingModels)
-                    }
                 }
-            }
 
+                Text("Установлено: \(modelManager.installedModelIDs.count) модели")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(24)
+    }
+
+    private var statsTab: some View {
+        Form {
             Section("Статистика") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     statsGridRow("Сегодня", formattedDuration(viewModel.snapshot.stats.todaySeconds))
@@ -273,14 +264,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(24)
-        .frame(minWidth: 680, minHeight: 580)
-        .onAppear {
-            viewModel.reload()
-            syncStorageFromSnapshot()
-        }
-        .onReceive(viewModel.$snapshot) { _ in
-            syncStorageFromSnapshot()
-        }
     }
 
     private func settingsRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {

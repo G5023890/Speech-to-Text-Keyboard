@@ -45,30 +45,83 @@ enum HotkeyMode: String, CaseIterable {
 }
 
 enum TranscribeModel: String, CaseIterable {
-    case mediumQ5
-    case smallQ5
-    case largeV3TurboQ5
+    case largeV3TurboQ4KM = "ggml-large-v3-turbo-q4_K_M"
+    case mediumQ5 = "ggml-medium-q5_0"
+    case smallQ8 = "ggml-small-q8_0"
+    case smallQ5 = "ggml-small-q5_1"
+    case mediumQ4 = "ggml-medium-q4_0"
+    case legacyLargeV3TurboQ5 = "largeV3TurboQ5"
 
     var title: String {
         switch self {
+        case .largeV3TurboQ4KM:
+            return "large-v3-turbo-q4_K_M"
         case .mediumQ5:
             return "medium-q5_0"
+        case .smallQ8:
+            return "small-q8_0"
         case .smallQ5:
             return "small-q5_1"
-        case .largeV3TurboQ5:
+        case .mediumQ4:
+            return "medium-q4_0"
+        case .legacyLargeV3TurboQ5:
             return "large-v3-turbo-q5_0"
         }
     }
 
     var fileName: String {
         switch self {
+        case .largeV3TurboQ4KM:
+            return "ggml-large-v3-turbo-q4_K_M.bin"
         case .mediumQ5:
             return "ggml-medium-q5_0.bin"
+        case .smallQ8:
+            return "ggml-small-q8_0.bin"
         case .smallQ5:
             return "ggml-small-q5_1.bin"
-        case .largeV3TurboQ5:
+        case .mediumQ4:
+            return "ggml-medium-q4_0.bin"
+        case .legacyLargeV3TurboQ5:
             return "ggml-large-v3-turbo-q5_0.bin"
         }
+    }
+
+    static func fromPersisted(_ rawValue: String) -> TranscribeModel? {
+        if let direct = TranscribeModel(rawValue: rawValue) {
+            return direct
+        }
+        switch rawValue {
+        case "mediumQ5":
+            return .mediumQ5
+        case "smallQ5":
+            return .smallQ5
+        case "largeV3TurboQ5":
+            return .legacyLargeV3TurboQ5
+        default:
+            return nil
+        }
+    }
+}
+
+final class SettingsWindow: NSWindow {
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+
+        if event.keyCode == 53 {
+            performClose(nil)
+            return
+        }
+        if modifiers.contains(.command), key == "w" {
+            performClose(nil)
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        performClose(sender)
     }
 }
 
@@ -130,6 +183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var modelUpdateInProgress = false
     private var updateCheckInProgress = false
     private var modelUpdateAvailable = false
+    private var modelManagementInProgress = false
+    private var modelManagementStatus = "Готово"
     private var activityCounter = 0
     private var clipboardRestoreState: ClipboardRestoreState?
     private var usageStats = UsageStats()
@@ -164,7 +219,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var modelsDirectoryPath: String {
+        return "\(appSupportDirectoryPath)/Models"
+    }
+
+    private var legacyLowercaseModelsDirectoryPath: String {
         return "\(appSupportDirectoryPath)/models"
+    }
+
+    private var downloadsDirectoryPath: String {
+        return "\(appSupportDirectoryPath)/Downloads"
+    }
+
+    private var catalogDirectoryPath: String {
+        return "\(appSupportDirectoryPath)/Catalog"
     }
 
     private var legacyModelsDirectoryPath: String {
@@ -204,6 +271,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(atPath: appSupportDirectoryPath, withIntermediateDirectories: true)
         try? fileManager.createDirectory(atPath: modelsDirectoryPath, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(atPath: downloadsDirectoryPath, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(atPath: catalogDirectoryPath, withIntermediateDirectories: true)
+
+        if fileManager.fileExists(atPath: legacyLowercaseModelsDirectoryPath),
+           let files = try? fileManager.contentsOfDirectory(atPath: legacyLowercaseModelsDirectoryPath)
+        {
+            for file in files where file.hasSuffix(".bin") {
+                let oldPath = "\(legacyLowercaseModelsDirectoryPath)/\(file)"
+                let newPath = "\(modelsDirectoryPath)/\(file)"
+                if !fileManager.fileExists(atPath: newPath) {
+                    try? fileManager.copyItem(atPath: oldPath, toPath: newPath)
+                }
+            }
+        }
 
         for model in legacyManagedModels {
             let newPath = "\(modelsDirectoryPath)/\(model)"
@@ -358,8 +439,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewModel = SettingsViewModel(actions: makeSettingsActions())
         let view = SettingsView(viewModel: viewModel)
         let hostingController = NSHostingController(rootView: view)
-        let window = NSWindow(contentViewController: hostingController)
-        window.setContentSize(NSSize(width: 720, height: 640))
+        let window = SettingsWindow(contentViewController: hostingController)
+        window.setContentSize(NSSize(width: 920, height: 700))
         window.title = "Настройки"
         window.isReleasedWhenClosed = false
         settingsViewModel = viewModel
@@ -402,6 +483,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     completion(snapshot)
                 }
             },
+            addModelFromURL: { [weak self] url, completion in
+                guard let self else {
+                    completion(.mock)
+                    return
+                }
+                self.addModelFromURL(url, completion: completion)
+            },
+            deleteModel: { [weak self] fileName, completion in
+                guard let self else {
+                    completion(.mock)
+                    return
+                }
+                self.deleteInstalledModel(fileName, completion: completion)
+            },
+            openModelsFolder: { [weak self] in
+                self?.openModelsFolder()
+            },
             resetStats: { [weak self] in
                 self?.resetUsageStatsData()
             }
@@ -409,10 +507,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installedModelsCount() -> Int {
-        managedModels.reduce(into: 0) { result, model in
-            if FileManager.default.fileExists(atPath: "\(modelsDirectoryPath)/\(model)") {
-                result += 1
-            }
+        return installedModels().count
+    }
+
+    private func installedModels() -> [SettingsInstalledModel] {
+        let fileManager = FileManager.default
+        let files = (try? fileManager.contentsOfDirectory(atPath: modelsDirectoryPath))?
+            .filter { $0.hasSuffix(".bin") }
+            .sorted() ?? []
+
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+
+        return files.map { file in
+            let fullPath = "\(modelsDirectoryPath)/\(file)"
+            let attributes = try? fileManager.attributesOfItem(atPath: fullPath)
+            let bytes = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let sizeText = bytes > 0 ? formatter.string(fromByteCount: bytes) : "—"
+            let normalized = file
+                .replacingOccurrences(of: "ggml-", with: "")
+                .replacingOccurrences(of: ".bin", with: "")
+            let displayName = TranscribeModel.allCases.first(where: { $0.fileName == file })?.title ?? normalized
+
+            return SettingsInstalledModel(
+                id: file,
+                fileName: file,
+                displayName: displayName,
+                sizeText: sizeText,
+                isManaged: managedModels.contains(file),
+                isActive: file == transcribeModel.fileName
+            )
         }
     }
 
@@ -444,7 +570,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastCheckStatus: settingsLastCheckStatusText(),
             stats: stats,
             isCheckingUpdates: updateCheckInProgress,
-            isUpdatingModels: modelUpdateInProgress
+            isUpdatingModels: modelUpdateInProgress,
+            installedModels: installedModels(),
+            modelManagementStatus: modelManagementStatus,
+            isManagingModels: modelManagementInProgress
         )
     }
 
@@ -459,6 +588,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "Последняя проверка: \(state.replacingOccurrences(of: "Обновление моделей: ", with: ""))"
         }
         return "Проверка обновлений еще не выполнялась"
+    }
+
+    private func sanitizedModelFileName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.replacingOccurrences(of: " ", with: "_")
+        let filtered = normalized.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_" || scalar == "." {
+                return Character(scalar)
+            }
+            return "_"
+        }
+        let collapsed = String(filtered).replacingOccurrences(of: "__", with: "_")
+        if collapsed.isEmpty {
+            return "model-\(UUID().uuidString.prefix(8)).bin"
+        }
+        return collapsed.hasSuffix(".bin") ? collapsed : "\(collapsed).bin"
+    }
+
+    private func addModelFromURL(_ urlString: String, completion: ((SettingsSnapshot) -> Void)? = nil) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            modelManagementStatus = "Укажите URL модели"
+            refreshSettingsWindow()
+            completion?(currentSettingsSnapshot())
+            return
+        }
+        guard let remoteURL = URL(string: trimmed),
+              let scheme = remoteURL.scheme?.lowercased(),
+              scheme == "https" || scheme == "http"
+        else {
+            modelManagementStatus = "Некорректный URL"
+            refreshSettingsWindow()
+            completion?(currentSettingsSnapshot())
+            return
+        }
+
+        let sourceName = remoteURL.lastPathComponent.isEmpty ? "model" : remoteURL.lastPathComponent
+        let fileName = sanitizedModelFileName(sourceName)
+        let destinationURL = URL(fileURLWithPath: "\(modelsDirectoryPath)/\(fileName)")
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            modelManagementStatus = "Модель уже установлена: \(fileName)"
+            refreshSettingsWindow()
+            completion?(currentSettingsSnapshot())
+            return
+        }
+
+        try? FileManager.default.createDirectory(atPath: modelsDirectoryPath, withIntermediateDirectories: true)
+        modelManagementInProgress = true
+        modelManagementStatus = "Загрузка \(fileName)…"
+        refreshSettingsWindow()
+        beginActivity()
+
+        let request = URLRequest(url: remoteURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 1200)
+        let task = URLSession.shared.downloadTask(with: request) { [weak self] tempURL, response, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                defer {
+                    self.modelManagementInProgress = false
+                    self.endActivity()
+                    self.refreshSettingsWindow()
+                    completion?(self.currentSettingsSnapshot())
+                }
+
+                if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    self.modelManagementStatus = "Ошибка загрузки: HTTP \(http.statusCode)"
+                    return
+                }
+                guard let tempURL else {
+                    self.modelManagementStatus = "Не удалось загрузить модель"
+                    if let error {
+                        self.showStatus("Model download error: \(error.localizedDescription)")
+                    }
+                    return
+                }
+
+                do {
+                    try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+                    self.modelManagementStatus = "Модель добавлена: \(fileName)"
+                    self.showStatus("Model added: \(fileName)")
+                } catch {
+                    self.modelManagementStatus = "Не удалось сохранить модель"
+                    self.showStatus("Model save failed")
+                }
+            }
+        }
+        task.resume()
+    }
+
+    private func deleteInstalledModel(_ fileName: String, completion: ((SettingsSnapshot) -> Void)? = nil) {
+        let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            modelManagementStatus = "Выберите модель для удаления"
+            refreshSettingsWindow()
+            completion?(currentSettingsSnapshot())
+            return
+        }
+        if trimmed == transcribeModel.fileName {
+            modelManagementStatus = "Нельзя удалить активную модель"
+            refreshSettingsWindow()
+            completion?(currentSettingsSnapshot())
+            return
+        }
+
+        let targetPath = "\(modelsDirectoryPath)/\(trimmed)"
+        guard FileManager.default.fileExists(atPath: targetPath) else {
+            modelManagementStatus = "Модель не найдена"
+            refreshSettingsWindow()
+            completion?(currentSettingsSnapshot())
+            return
+        }
+
+        modelManagementInProgress = true
+        refreshSettingsWindow()
+        do {
+            try FileManager.default.removeItem(atPath: targetPath)
+            if managedModels.contains(trimmed) {
+                modelUpdateAvailable = true
+            }
+            modelManagementStatus = "Модель удалена: \(trimmed)"
+            showStatus("Model removed: \(trimmed)")
+        } catch {
+            modelManagementStatus = "Не удалось удалить модель"
+            showStatus("Model remove failed")
+        }
+        modelManagementInProgress = false
+        refreshSettingsWindow()
+        completion?(currentSettingsSnapshot())
+    }
+
+    private func openModelsFolder() {
+        try? FileManager.default.createDirectory(atPath: modelsDirectoryPath, withIntermediateDirectories: true)
+        let url = URL(fileURLWithPath: modelsDirectoryPath, isDirectory: true)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        modelManagementStatus = "Открыта папка моделей"
+        refreshSettingsWindow()
     }
 
     private func loadMenuBarIcon() -> NSImage? {
@@ -504,7 +768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func loadTranscribeModel() {
         let saved = UserDefaults.standard.string(forKey: transcribeModelDefaultsKey) ?? TranscribeModel.mediumQ5.rawValue
-        transcribeModel = TranscribeModel(rawValue: saved) ?? .mediumQ5
+        transcribeModel = TranscribeModel.fromPersisted(saved) ?? .mediumQ5
     }
 
     private func saveTranscribeModel() {
@@ -1457,7 +1721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func selectTranscribeModel(_ sender: NSMenuItem) {
         guard
             let raw = sender.representedObject as? String,
-            TranscribeModel(rawValue: raw) != nil
+            TranscribeModel.fromPersisted(raw) != nil
         else {
             return
         }
@@ -1465,7 +1729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setTranscribeModel(rawValue: String) {
-        guard let model = TranscribeModel(rawValue: rawValue) else {
+        guard let model = TranscribeModel.fromPersisted(rawValue) else {
             return
         }
         transcribeModel = model
