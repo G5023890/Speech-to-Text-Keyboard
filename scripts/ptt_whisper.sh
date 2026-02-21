@@ -58,6 +58,7 @@ WHISPER_THREADS="${WHISPER_THREADS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 WHISPER_VAD="${WHISPER_VAD:-0}"
 WHISPER_BEAM_SIZE="${WHISPER_BEAM_SIZE:-1}"
 WHISPER_BEST_OF="${WHISPER_BEST_OF:-1}"
+WHISPER_GPU_FALLBACK="${WHISPER_GPU_FALLBACK:-1}"
 DEFAULT_GLOSSARY_FILE="${SCRIPT_DIR}/config/glossary.txt"
 if [[ ! -f "${DEFAULT_GLOSSARY_FILE}" ]]; then
   DEFAULT_GLOSSARY_FILE="${ROOT_DIR}/config/glossary.txt"
@@ -109,7 +110,22 @@ run_transcription() {
   if [[ "${WHISPER_VAD}" == "1" ]]; then
     cmd+=(--vad)
   fi
-  "${cmd[@]}" >/dev/null 2>&1
+  local whisper_err_log="${RUNTIME_DIR}/whisper_last_error.log"
+  : >"${whisper_err_log}"
+  if ! "${cmd[@]}" >/dev/null 2>"${whisper_err_log}"; then
+    if [[ "${WHISPER_GPU_FALLBACK}" == "1" ]]; then
+      local cpu_cmd=("${cmd[@]}" -ng)
+      if ! "${cpu_cmd[@]}" >/dev/null 2>>"${whisper_err_log}"; then
+        echo "error: whisper_transcription_failed" >&2
+        tail -n 80 "${whisper_err_log}" >&2 || true
+        exit 1
+      fi
+    else
+      echo "error: whisper_transcription_failed" >&2
+      tail -n 80 "${whisper_err_log}" >&2 || true
+      exit 1
+    fi
+  fi
 
   local text_output=""
   if [[ -f "${TRANSCRIPT_FILE}" ]]; then

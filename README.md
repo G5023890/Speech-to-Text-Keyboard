@@ -58,7 +58,7 @@ After install:
 - menu bar icon source: `Resources/taskbar_Mic.png`
 - app icon source: `assets/AppIcon.icns`
 - app stays only in menu bar (hidden from Dock)
-- settings are in menu: `Настройки`
+- settings open from menu item: `Настройки…` (dialog window)
 - hotkey is selectable: `Shift+Option`, `Shift+Control`, `Shift+Command`, `Shift+Fn`, `Fn`
 - update flow: `Проверить обновления` shows install/update state and versions for models
 - update button: `Обновить модели`
