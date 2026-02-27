@@ -140,6 +140,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var sessions: Int = 0
         var seconds: Double = 0
         var characters: Int = 0
+        var words: Int = 0
+
+        init() {}
+
+        private enum CodingKeys: String, CodingKey {
+            case sessions
+            case seconds
+            case characters
+            case words
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sessions = try container.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
+            seconds = try container.decodeIfPresent(Double.self, forKey: .seconds) ?? 0
+            characters = try container.decodeIfPresent(Int.self, forKey: .characters) ?? 0
+            words = try container.decodeIfPresent(Int.self, forKey: .words) ?? 0
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(sessions, forKey: .sessions)
+            try container.encode(seconds, forKey: .seconds)
+            try container.encode(characters, forKey: .characters)
+            try container.encode(words, forKey: .words)
+        }
     }
 
     private struct UsageStats: Codable {
@@ -159,7 +185,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localFlagsMonitor: Any?
     private var isRecording = false
     private var recordingStartedAt: Date?
-    private var recorder: AVAudioRecorder?
+    private let audioManager = AudioManager()
+    private var partialLoopTask: Task<Void, Never>?
+    private var partialInferenceInFlight = false
+    private var lastPartialDraft: String = ""
     private var hotkeyMenuItems: [HotkeyMode: NSMenuItem] = [:]
     private var transcribeModelMenuItems: [TranscribeModel: NSMenuItem] = [:]
     private var launchAtLoginItem: NSMenuItem?
@@ -177,9 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsViewModel: SettingsViewModel?
     private let hotkeyDefaultsKey = "voice_input_hotkey_mode"
     private let transcribeModelDefaultsKey = "voice_input_transcribe_model"
+    private let languageModeDefaultsKey = "voice_input_language_mode"
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
     private var hotkeyMode: HotkeyMode = .shiftOption
     private var transcribeModel: TranscribeModel = .mediumQ5
+    private var languageMode: LanguageMode = .auto
     private var modelUpdateInProgress = false
     private var updateCheckInProgress = false
     private var modelUpdateAvailable = false
@@ -206,10 +237,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadUsageStats()
         loadHotkeyMode()
         loadTranscribeModel()
+        loadLanguageMode()
         setupStatusItem()
         ensureAccessibilityPermission()
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
+        Task { [weak self] in
+            guard let self else { return }
+            let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
+            try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+        }
         showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
     }
 
@@ -252,6 +289,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var transcriptionDiagnosticsPath: String {
         return "\(appSupportDirectoryPath)/transcription_diagnostics.log"
+    }
+
+    private var runtimeDiagnosticsPath: String {
+        return "\(appSupportDirectoryPath)/runtime_diagnostics.log"
     }
 
     private var transcribeScriptPath: String? {
@@ -299,6 +340,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        partialLoopTask?.cancel()
+        partialLoopTask = nil
+        audioManager.stop()
         stopRecordingHalo()
         if let globalFlagsMonitor {
             NSEvent.removeMonitor(globalFlagsMonitor)
@@ -465,6 +509,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setModel: { [weak self] rawValue in
                 self?.setTranscribeModel(rawValue: rawValue)
             },
+            setLanguageMode: { [weak self] rawValue in
+                self?.setLanguageMode(rawValue: rawValue)
+            },
             checkUpdates: { [weak self] completion in
                 guard let self else {
                     completion(.mock)
@@ -546,16 +593,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let today = usageForLastDays(1)
         let week = usageForCurrentWeek()
         let month = usageForCurrentMonth()
-        let weekHasAggregate = week.sessions > today.sessions || week.characters > today.characters || week.seconds > today.seconds + 0.001
-        let monthHasAggregate = month.sessions > today.sessions || month.characters > today.characters || month.seconds > today.seconds + 0.001
-        let totalHasAggregate = usageStats.total.sessions > today.sessions || usageStats.total.characters > today.characters || usageStats.total.seconds > today.seconds + 0.001
+        let weekHasAggregate = week.sessions > today.sessions || week.words > today.words || week.seconds > today.seconds + 0.001
+        let monthHasAggregate = month.sessions > today.sessions || month.words > today.words || month.seconds > today.seconds + 0.001
+        let totalHasAggregate = usageStats.total.sessions > today.sessions || usageStats.total.words > today.words || usageStats.total.seconds > today.seconds + 0.001
         let stats = SettingsStats(
             todaySeconds: today.seconds,
             weekSeconds: week.seconds,
             monthSeconds: month.seconds,
             totalSeconds: usageStats.total.seconds,
+            todayWords: today.words,
+            weekWords: week.words,
+            monthWords: month.words,
             sessions: usageStats.total.sessions,
-            characters: usageStats.total.characters,
+            words: usageStats.total.words,
             hasWeeklyAggregate: weekHasAggregate,
             hasMonthlyAggregate: monthHasAggregate,
             hasTotalAggregate: totalHasAggregate
@@ -564,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             launchAtLoginEnabled: isLaunchAtLoginEnabled(),
             selectedHotkey: hotkeyMode.rawValue,
             selectedModelID: transcribeModel.rawValue,
+            selectedLanguageMode: languageMode.rawValue,
             installedModelCount: installedModelsCount(),
             totalModelCount: managedModels.count,
             updatesAvailable: modelUpdateAvailable,
@@ -775,6 +826,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(transcribeModel.rawValue, forKey: transcribeModelDefaultsKey)
     }
 
+    private func loadLanguageMode() {
+        let saved = UserDefaults.standard.string(forKey: languageModeDefaultsKey) ?? LanguageMode.auto.rawValue
+        languageMode = LanguageMode(rawValue: saved) ?? .auto
+    }
+
+    private func saveLanguageMode() {
+        UserDefaults.standard.set(languageMode.rawValue, forKey: languageModeDefaultsKey)
+    }
+
     private func loadUsageStats() {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(atPath: appSupportDirectoryPath, withIntermediateDirectories: true)
@@ -821,6 +881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bucket.sessions += value.sessions
                 bucket.seconds += value.seconds
                 bucket.characters += value.characters
+                bucket.words += value.words
             }
         }
         return bucket
@@ -840,6 +901,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bucket.sessions += value.sessions
                 bucket.seconds += value.seconds
                 bucket.characters += value.characters
+                bucket.words += value.words
             }
         }
         return bucket
@@ -859,6 +921,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bucket.sessions += value.sessions
                 bucket.seconds += value.seconds
                 bucket.characters += value.characters
+                bucket.words += value.words
             }
         }
         return bucket
@@ -896,7 +959,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func recordUsage(durationSeconds: Double, text: String) {
         let seconds = max(0.0, durationSeconds)
         let chars = text.count
-        guard seconds > 0 || chars > 0 else {
+        let words = countWords(text)
+        guard seconds > 0 || chars > 0 || words > 0 else {
             return
         }
 
@@ -905,11 +969,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         day.sessions += 1
         day.seconds += seconds
         day.characters += chars
+        day.words += words
         usageStats.daily[key] = day
 
         usageStats.total.sessions += 1
         usageStats.total.seconds += seconds
         usageStats.total.characters += chars
+        usageStats.total.words += words
 
         pruneUsageStats(keepingLastDays: 400)
         saveUsageStats()
@@ -985,6 +1051,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let handle = FileHandle(forWritingAtPath: transcriptionDiagnosticsPath) {
+            defer { try? handle.close() }
+            handle.seekToEndOfFile()
+            if let data = line.data(using: .utf8) {
+                try? handle.write(contentsOf: data)
+            }
+        }
+    }
+
+    private func appendRuntimeDiagnostic(_ message: String) {
+        let fileManager = FileManager.default
+        try? fileManager.createDirectory(atPath: appSupportDirectoryPath, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "\(timestamp)\t\(message)\n"
+        if !fileManager.fileExists(atPath: runtimeDiagnosticsPath) {
+            try? line.write(to: URL(fileURLWithPath: runtimeDiagnosticsPath), atomically: true, encoding: .utf8)
+            return
+        }
+        if let handle = FileHandle(forWritingAtPath: runtimeDiagnosticsPath) {
             defer { try? handle.close() }
             handle.seekToEndOfFile()
             if let data = line.data(using: .utf8) {
@@ -1079,38 +1163,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isRecording {
             return
         }
+        appendRuntimeDiagnostic("ptt_begin_requested model=\(transcribeModel.fileName) lang=\(languageMode.rawValue)")
         isRecording = true
         recordingStartedAt = Date()
+        lastPartialDraft = ""
+        partialInferenceInFlight = false
         startRecordingHalo()
         showStatus("Recording...")
-
-        let runtimeDir = runtimeDirectoryPath
-        try? FileManager.default.createDirectory(atPath: runtimeDir, withIntermediateDirectories: true)
-        try? FileManager.default.removeItem(atPath: recordingPath)
-
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsFloatKey: false
-        ]
-
         do {
-            recorder = try AVAudioRecorder(url: URL(fileURLWithPath: recordingPath), settings: settings)
-            recorder?.prepareToRecord()
-            if recorder?.record() != true {
-                isRecording = false
-                recordingStartedAt = nil
-                stopRecordingHalo()
-                showStatus("Failed to start recording")
-            }
+            try audioManager.start()
+            appendRuntimeDiagnostic("audio_engine_started")
+            startPartialLoop()
         } catch {
+            appendRuntimeDiagnostic("audio_engine_start_failed error=\(error.localizedDescription)")
             isRecording = false
             recordingStartedAt = nil
             stopRecordingHalo()
-            showStatus("Recorder error")
+            showStatus("Audio engine error")
         }
     }
 
@@ -1118,14 +1187,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !isRecording {
             return
         }
+        appendRuntimeDiagnostic("ptt_stop_requested")
         isRecording = false
         stopRecordingHalo()
-        let recorderDuration = max(0.0, recorder?.currentTime ?? 0.0)
-        let fallbackDuration = max(0.0, Date().timeIntervalSince(recordingStartedAt ?? Date()))
-        let sessionDuration = recorderDuration > 0.0 ? recorderDuration : fallbackDuration
-        recorder?.stop()
-        recorder = nil
+        partialLoopTask?.cancel()
+        partialLoopTask = nil
+        let sessionDuration = max(0.0, Date().timeIntervalSince(recordingStartedAt ?? Date()))
+        audioManager.stop()
         recordingStartedAt = nil
+        appendRuntimeDiagnostic("audio_engine_stopped duration=\(String(format: "%.2f", sessionDuration))")
 
         if sessionDuration < 0.12 {
             appendTranscriptionDiagnostic(
@@ -1139,106 +1209,168 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         showStatus("Transcribing...")
-
-        runTranscribe(audioPath: recordingPath) { [weak self] exitCode, output, errorText in
-            guard let self else { return }
-            guard exitCode == 0 else {
-                self.appendTranscriptionDiagnostic(
-                    status: "rejected",
-                    durationSeconds: sessionDuration,
-                    text: "",
-                    reason: "stt_error_\(exitCode)"
-                )
-                self.showStatus("STT error")
-                self.showErrorAlert(title: "STT error", text: errorText.isEmpty ? "Transcription failed." : errorText)
-                self.clearTransientData(clearClipboard: false)
-                return
-            }
-
-            let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else {
-                self.appendTranscriptionDiagnostic(
-                    status: "rejected",
-                    durationSeconds: sessionDuration,
-                    text: text,
-                    reason: "empty_output"
-                )
-                self.showStatus("No speech detected")
-                self.clearTransientData(clearClipboard: false)
-                return
-            }
-
-            let decision = self.shouldRejectTranscript(text, durationSeconds: sessionDuration)
-            if decision.reject {
-                self.appendTranscriptionDiagnostic(
-                    status: "rejected",
-                    durationSeconds: sessionDuration,
-                    text: text,
-                    reason: decision.reason
-                )
-                self.showStatus("Артефакт распознавания (пропущено)")
-                self.clearTransientData(clearClipboard: false)
-                return
-            }
-
-            self.lastAcceptedTranscript = text
-            self.appendTranscriptionDiagnostic(
-                status: "accepted",
+        let finalSamples = audioManager.snapshotSpeechSamples()
+        appendRuntimeDiagnostic("final_samples_count=\(finalSamples.count)")
+        if finalSamples.count < 320 {
+            appendTranscriptionDiagnostic(
+                status: "rejected",
                 durationSeconds: sessionDuration,
-                text: text,
-                reason: "ok"
+                text: "",
+                reason: "empty_audio_after_vad"
             )
-
-            self.recordUsage(durationSeconds: sessionDuration, text: text)
-
-            let pasted = self.pasteText(text)
-            if pasted {
-                self.showStatus("Pasted")
-                self.clearTransientData(clearClipboard: true)
-            } else {
-                self.showStatus("Paste blocked, text copied")
-                self.clearTransientData(clearClipboard: false)
-                self.showErrorAlert(title: "Auto-paste blocked", text: "Text is copied to clipboard. Grant Accessibility for Voice Input to allow auto-paste.")
+            showStatus("No speech detected")
+            clearTransientData(clearClipboard: false)
+            return
+        }
+        let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.appendRuntimeDiagnostic("final_decode_started model_path=\(modelPath)")
+                let output = try await SpeechEngine.shared.transcribe(
+                    samples: finalSamples,
+                    modelPath: modelPath,
+                    languageMode: self.languageMode,
+                    pass: .final
+                )
+                var finalText = output.text
+                var finalLanguage = output.detectedLanguageCode
+                var finalConfidence = output.confidence
+                if finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.appendRuntimeDiagnostic("native_empty_try_cli_fallback")
+                    do {
+                        let fallbackText = try await self.transcribeViaScriptFallback(
+                            samples: finalSamples,
+                            modelPath: modelPath,
+                            languageMode: self.languageMode
+                        )
+                        let fallbackTrimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        self.appendRuntimeDiagnostic("cli_fallback_done text_len=\(fallbackTrimmed.count)")
+                        if !fallbackTrimmed.isEmpty {
+                            finalText = fallbackTrimmed
+                            finalLanguage = self.languageMode.whisperLanguageCode ?? output.detectedLanguageCode
+                            finalConfidence = max(0.55, output.confidence)
+                        }
+                    } catch {
+                        self.appendRuntimeDiagnostic("cli_fallback_failed error=\(error.localizedDescription)")
+                    }
+                }
+                let finalizedText = finalText
+                let finalizedLanguage = finalLanguage
+                let finalizedConfidence = finalConfidence
+                await MainActor.run {
+                    self.appendRuntimeDiagnostic("final_decode_done text_len=\(finalizedText.count) conf=\(String(format: "%.2f", finalizedConfidence)) lang=\(finalizedLanguage ?? "nil")")
+                    self.handleFinalTranscription(
+                        text: finalizedText,
+                        duration: sessionDuration,
+                        detectedLanguageCode: finalizedLanguage,
+                        confidence: finalizedConfidence
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.appendRuntimeDiagnostic("final_decode_failed error=\(error.localizedDescription)")
+                    self.appendTranscriptionDiagnostic(
+                        status: "rejected",
+                        durationSeconds: sessionDuration,
+                        text: "",
+                        reason: "stt_error_native"
+                    )
+                    self.showStatus("STT error")
+                    self.showErrorAlert(title: "STT error", text: error.localizedDescription)
+                    self.clearTransientData(clearClipboard: false)
+                }
             }
         }
     }
 
-    private func runTranscribe(audioPath: String, completion: @escaping (Int32, String, String) -> Void) {
-        guard let scriptPath = transcribeScriptPath else {
-            completion(1, "", "Transcription script not found.")
-            return
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        let quotedScript = "\"\(scriptPath)\""
-        let quotedAudio = "\"\(audioPath)\""
-        process.arguments = ["-lc", "\(quotedScript) transcribe \(quotedAudio)"]
-        var env = ProcessInfo.processInfo.environment
-        env["WHISPER_MODEL_DIR"] = modelsDirectoryPath
-        env["WHISPER_MODEL"] = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
-        env["WHISPER_APP_SUPPORT_DIR"] = appSupportDirectoryPath
-        env["WHISPER_RUNTIME_DIR"] = runtimeDirectoryPath
-        process.environment = env
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        process.terminationHandler = { proc in
-            let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: outData, encoding: .utf8) ?? ""
-            let errorOutput = String(data: errData, encoding: .utf8) ?? ""
-            DispatchQueue.main.async {
-                completion(proc.terminationStatus, output, errorOutput)
+    private func startPartialLoop() {
+        partialLoopTask?.cancel()
+        let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
+        partialLoopTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if Task.isCancelled { return }
+                if !self.isRecording { return }
+                if self.partialInferenceInFlight { continue }
+                self.partialInferenceInFlight = true
+                let samples = self.audioManager.snapshotSpeechSamples()
+                if samples.count < 1600 {
+                    self.appendRuntimeDiagnostic("partial_skip_small_buffer samples=\(samples.count)")
+                    self.partialInferenceInFlight = false
+                    continue
+                }
+                do {
+                    let output = try await SpeechEngine.shared.transcribe(
+                        samples: samples,
+                        modelPath: modelPath,
+                        languageMode: self.languageMode,
+                        pass: .partial
+                    )
+                    await MainActor.run {
+                        self.lastPartialDraft = output.text
+                        self.appendRuntimeDiagnostic("partial_decode_done text_len=\(output.text.count) conf=\(String(format: "%.2f", output.confidence))")
+                        let draft = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !draft.isEmpty {
+                            let short = draft.count > 80 ? "\(draft.prefix(80))…" : draft
+                            self.showStatus("Черновик: \(short)")
+                        }
+                    }
+                } catch {
+                    self.appendRuntimeDiagnostic("partial_decode_failed error=\(error.localizedDescription)")
+                }
+                self.partialInferenceInFlight = false
             }
         }
+    }
 
-        do {
-            try process.run()
-        } catch {
-            completion(1, "", "Cannot launch transcription process.")
+    private func handleFinalTranscription(text: String, duration: Double, detectedLanguageCode: String?, confidence: Float) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        appendRuntimeDiagnostic("handle_final text_len=\(trimmedText.count)")
+        guard !trimmedText.isEmpty else {
+            appendTranscriptionDiagnostic(
+                status: "rejected",
+                durationSeconds: duration,
+                text: "",
+                reason: "empty_output"
+            )
+            showStatus("No speech detected")
+            clearTransientData(clearClipboard: false)
+            return
+        }
+
+        let decision = shouldRejectTranscript(trimmedText, durationSeconds: duration)
+        if decision.reject {
+            appendTranscriptionDiagnostic(
+                status: "rejected",
+                durationSeconds: duration,
+                text: trimmedText,
+                reason: decision.reason
+            )
+            showStatus("Артефакт распознавания (пропущено)")
+            clearTransientData(clearClipboard: false)
+            return
+        }
+
+        lastAcceptedTranscript = trimmedText
+        let languagePart = detectedLanguageCode.map { "lang=\($0)" } ?? "lang=auto"
+        appendTranscriptionDiagnostic(
+            status: "accepted",
+            durationSeconds: duration,
+            text: trimmedText,
+            reason: "\(languagePart),conf=\(String(format: "%.2f", confidence))"
+        )
+        recordUsage(durationSeconds: duration, text: trimmedText)
+
+        let pasted = pasteText(trimmedText)
+        if pasted {
+            showStatus("Pasted")
+            clearTransientData(clearClipboard: true)
+        } else {
+            showStatus("Paste blocked, text copied")
+            clearTransientData(clearClipboard: false)
+            showErrorAlert(title: "Auto-paste blocked", text: "Text is copied to clipboard. Grant Accessibility for Voice Input to allow auto-paste.")
         }
     }
 
@@ -1529,6 +1661,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func runShellAsync(command: String, environment: [String: String]? = nil) async -> (Int32, String) {
+        await withCheckedContinuation { continuation in
+            runShell(command: command, environment: environment) { code, output in
+                continuation.resume(returning: (code, output))
+            }
+        }
+    }
+
+    private func transcribeViaScriptFallback(samples: [Float], modelPath: String, languageMode: LanguageMode) async throws -> String {
+        guard let scriptPath = transcribeScriptPath else {
+            throw NSError(domain: "VoiceInput", code: 3101, userInfo: [NSLocalizedDescriptionKey: "Fallback script not found"])
+        }
+        guard !samples.isEmpty else {
+            return ""
+        }
+
+        try FileManager.default.createDirectory(atPath: runtimeDirectoryPath, withIntermediateDirectories: true)
+        let wavPath = recordingPath
+        try writeSamplesAsWav(samples, to: wavPath)
+
+        let env: [String: String] = [
+            "WHISPER_MODEL": modelPath,
+            "WHISPER_MODEL_DIR": modelsDirectoryPath,
+            "WHISPER_APP_SUPPORT_DIR": appSupportDirectoryPath,
+            "WHISPER_RUNTIME_DIR": runtimeDirectoryPath,
+            "WHISPER_LANGUAGE": languageMode.whisperLanguageCode ?? "auto",
+            "WHISPER_THREADS": "\(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))",
+            "WHISPER_BEAM_SIZE": "1",
+            "WHISPER_BEST_OF": "1",
+            "WHISPER_GPU_FALLBACK": "1"
+        ]
+        let command = "\(shellQuote(scriptPath)) transcribe \(shellQuote(wavPath))"
+        let (code, output) = await runShellAsync(command: command, environment: env)
+        if code != 0 {
+            throw NSError(domain: "VoiceInput", code: 3102, userInfo: [NSLocalizedDescriptionKey: output.isEmpty ? "Fallback transcription failed" : output])
+        }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func writeSamplesAsWav(_ samples: [Float], to path: String) throws {
+        let sampleRate: UInt32 = 16_000
+        let channels: UInt16 = 1
+        let bitsPerSample: UInt16 = 16
+        let blockAlign: UInt16 = channels * (bitsPerSample / 8)
+        let byteRate: UInt32 = sampleRate * UInt32(blockAlign)
+
+        var pcm = Data(capacity: samples.count * 2)
+        for sample in samples {
+            let clamped = max(-1.0, min(1.0, sample))
+            let scaled = Int16(clamped * Float(Int16.max))
+            var le = scaled.littleEndian
+            withUnsafeBytes(of: &le) { pcm.append(contentsOf: $0) }
+        }
+
+        let dataChunkSize = UInt32(pcm.count)
+        let riffChunkSize = 36 + dataChunkSize
+
+        var wav = Data()
+        wav.append(Data("RIFF".utf8))
+        appendLE(riffChunkSize, to: &wav)
+        wav.append(Data("WAVE".utf8))
+        wav.append(Data("fmt ".utf8))
+        appendLE(UInt32(16), to: &wav) // PCM fmt chunk size
+        appendLE(UInt16(1), to: &wav) // PCM format
+        appendLE(channels, to: &wav)
+        appendLE(sampleRate, to: &wav)
+        appendLE(byteRate, to: &wav)
+        appendLE(blockAlign, to: &wav)
+        appendLE(bitsPerSample, to: &wav)
+        wav.append(Data("data".utf8))
+        appendLE(dataChunkSize, to: &wav)
+        wav.append(pcm)
+
+        try wav.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    private func appendLE<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+        var le = value.littleEndian
+        withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     @objc private func confirmAndUpdateModels() {
         let alert = NSAlert()
         alert.messageText = "Update models?"
@@ -1735,7 +1952,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeModel = model
         saveTranscribeModel()
         updateTranscribeModelMenuState()
+        let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
+        Task {
+            try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+        }
         showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
+    }
+
+    private func setLanguageMode(rawValue: String) {
+        guard let mode = LanguageMode(rawValue: rawValue) else {
+            return
+        }
+        languageMode = mode
+        saveLanguageMode()
+        refreshSettingsWindow()
+        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title), lang: \(mode.title)")
     }
 
     @objc private func toggleLaunchAtLogin() {

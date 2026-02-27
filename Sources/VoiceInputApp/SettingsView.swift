@@ -21,8 +21,11 @@ struct SettingsStats: Equatable {
     var weekSeconds: Double
     var monthSeconds: Double
     var totalSeconds: Double
+    var todayWords: Int
+    var weekWords: Int
+    var monthWords: Int
     var sessions: Int
-    var characters: Int
+    var words: Int
     var hasWeeklyAggregate: Bool
     var hasMonthlyAggregate: Bool
     var hasTotalAggregate: Bool
@@ -32,8 +35,11 @@ struct SettingsStats: Equatable {
         weekSeconds: 724,
         monthSeconds: 2592,
         totalSeconds: 8040,
+        todayWords: 42,
+        weekWords: 187,
+        monthWords: 311,
         sessions: 18,
-        characters: 1438,
+        words: 311,
         hasWeeklyAggregate: true,
         hasMonthlyAggregate: true,
         hasTotalAggregate: true
@@ -44,6 +50,7 @@ struct SettingsSnapshot: Equatable {
     var launchAtLoginEnabled: Bool
     var selectedHotkey: String
     var selectedModelID: String
+    var selectedLanguageMode: String
     var installedModelCount: Int
     var totalModelCount: Int
     var updatesAvailable: Bool
@@ -59,6 +66,7 @@ struct SettingsSnapshot: Equatable {
         launchAtLoginEnabled: true,
         selectedHotkey: HotkeyMode.shiftOption.rawValue,
         selectedModelID: TranscribeModel.mediumQ5.rawValue,
+        selectedLanguageMode: LanguageMode.auto.rawValue,
         installedModelCount: 3,
         totalModelCount: 3,
         updatesAvailable: false,
@@ -77,6 +85,7 @@ struct SettingsActions {
     var setLaunchAtLogin: (Bool) -> Void
     var setHotkey: (String) -> Void
     var setModel: (String) -> Void
+    var setLanguageMode: (String) -> Void
     var checkUpdates: (@escaping (SettingsSnapshot) -> Void) -> Void
     var updateModels: (@escaping (SettingsSnapshot) -> Void) -> Void
     var addModelFromURL: (String, @escaping (SettingsSnapshot) -> Void) -> Void
@@ -89,6 +98,7 @@ struct SettingsActions {
         setLaunchAtLogin: { _ in },
         setHotkey: { _ in },
         setModel: { _ in },
+        setLanguageMode: { _ in },
         checkUpdates: { completion in completion(.mock) },
         updateModels: { completion in completion(.mock) },
         addModelFromURL: { _, completion in completion(.mock) },
@@ -133,6 +143,11 @@ final class SettingsViewModel: ObservableObject {
         reload()
     }
 
+    func applyLanguageMode(_ rawValue: String) {
+        actions.setLanguageMode(rawValue)
+        reload()
+    }
+
     func resetStats() {
         actions.resetStats()
         reload()
@@ -151,6 +166,7 @@ struct SettingsView: View {
     @AppStorage("voice_input_launch_at_login") private var launchAtLogin = false
     @AppStorage("voice_input_hotkey_mode") private var hotkey = HotkeyMode.shiftOption.rawValue
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
+    @AppStorage("voice_input_language_mode") private var languageMode = LanguageMode.auto.rawValue
 
     @State private var selectedTab: SettingsTab = .general
     @StateObject private var modelManager: ModelManager
@@ -225,6 +241,23 @@ struct SettingsView: View {
                     .controlSize(.large)
                     .frame(width: pickerWidth)
                 }
+
+                settingsRow(label: "Язык") {
+                    Picker("", selection: Binding(
+                        get: { languageMode },
+                        set: { newValue in
+                            languageMode = newValue
+                            viewModel.applyLanguageMode(newValue)
+                        }
+                    )) {
+                        ForEach(LanguageMode.allCases, id: \.rawValue) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.large)
+                    .frame(width: pickerWidth)
+                }
             }
 
             Section("Текущая модель") {
@@ -247,13 +280,13 @@ struct SettingsView: View {
         Form {
             Section("Статистика") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                    statsGridRow("Сегодня", formattedDuration(viewModel.snapshot.stats.todaySeconds))
-                    statsGridRow("Неделя", viewModel.snapshot.stats.hasWeeklyAggregate ? formattedDuration(viewModel.snapshot.stats.weekSeconds) : "—")
-                    statsGridRow("Месяц", viewModel.snapshot.stats.hasMonthlyAggregate ? formattedDuration(viewModel.snapshot.stats.monthSeconds) : "—")
+                    statsGridRow("Сегодня", formattedStatsValue(seconds: viewModel.snapshot.stats.todaySeconds, words: viewModel.snapshot.stats.todayWords))
+                    statsGridRow("Неделя", viewModel.snapshot.stats.hasWeeklyAggregate ? formattedStatsValue(seconds: viewModel.snapshot.stats.weekSeconds, words: viewModel.snapshot.stats.weekWords) : "—")
+                    statsGridRow("Месяц", viewModel.snapshot.stats.hasMonthlyAggregate ? formattedStatsValue(seconds: viewModel.snapshot.stats.monthSeconds, words: viewModel.snapshot.stats.monthWords) : "—")
                     statsGridRow("Всего", viewModel.snapshot.stats.hasTotalAggregate ? formattedDuration(viewModel.snapshot.stats.totalSeconds) : "—")
                 }
 
-                Text("\(viewModel.snapshot.stats.sessions) диктовок • \(viewModel.snapshot.stats.characters) символов")
+                Text("\(viewModel.snapshot.stats.sessions) диктовок • \(viewModel.snapshot.stats.words) слов")
                     .foregroundStyle(.secondary)
 
                 Button("Сбросить статистику", role: .destructive) {
@@ -282,10 +315,15 @@ struct SettingsView: View {
         }
     }
 
+    private func formattedStatsValue(seconds: Double, words: Int) -> String {
+        return "\(formattedDuration(seconds)) • \(words.formatted()) слов"
+    }
+
     private func syncStorageFromSnapshot() {
         launchAtLogin = viewModel.snapshot.launchAtLoginEnabled
         hotkey = viewModel.snapshot.selectedHotkey
         selectedModelID = viewModel.snapshot.selectedModelID
+        languageMode = viewModel.snapshot.selectedLanguageMode
     }
 
     private func formattedDuration(_ seconds: Double) -> String {

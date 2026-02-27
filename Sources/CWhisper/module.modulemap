@@ -1,0 +1,5 @@
+module CWhisper [system] {
+    header "/opt/homebrew/opt/whisper-cpp/include/whisper.h"
+    link "whisper"
+    export *
+}

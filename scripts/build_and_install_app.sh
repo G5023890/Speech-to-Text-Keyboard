@@ -119,6 +119,8 @@ cat > "$ENTITLEMENTS_FILE" <<ENT
 <dict>
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
 </dict>
 </plist>
 ENT
