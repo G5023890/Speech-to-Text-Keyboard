@@ -3,7 +3,8 @@ import Foundation
 
 final class AudioManager {
     static let targetSampleRate: Double = 16_000
-    static let maxSeconds: Double = 4.0
+    // Keep a longer rolling window so long PTT phrases are not truncated.
+    static let maxSeconds: Double = 20.0
 
     private let engine = AVAudioEngine()
     private let processingQueue = DispatchQueue(label: "voiceinput.audio.processing")
