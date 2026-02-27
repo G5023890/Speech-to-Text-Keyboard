@@ -154,10 +154,34 @@ final class SettingsViewModel: ObservableObject {
     }
 }
 
-private enum SettingsTab: Hashable {
+private enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     case general
     case models
     case stats
+
+    var title: String {
+        switch self {
+        case .general:
+            return "Общие"
+        case .models:
+            return "Модели"
+        case .stats:
+            return "Статистика"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general:
+            return "gearshape"
+        case .models:
+            return "square.stack.3d.up"
+        case .stats:
+            return "chart.bar"
+        }
+    }
+
+    var id: String { rawValue }
 }
 
 struct SettingsView: View {
@@ -167,12 +191,12 @@ struct SettingsView: View {
     @AppStorage("voice_input_hotkey_mode") private var hotkey = HotkeyMode.shiftOption.rawValue
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
     @AppStorage("voice_input_language_mode") private var languageMode = LanguageMode.auto.rawValue
+    @AppStorage("qualityMode") private var qualityMode = QualityMode.balanced.rawValue
 
-    @State private var selectedTab: SettingsTab = .general
+    @State private var selectedTab: SettingsTab? = .general
     @StateObject private var modelManager: ModelManager
 
     private let pickerWidth: CGFloat = 280
-    private let controlsColumnWidth: CGFloat = 380
 
     init(viewModel: SettingsViewModel) {
         self.viewModel = viewModel
@@ -182,24 +206,14 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            generalTab
-                .tabItem {
-                    Label("Общие", systemImage: "gearshape")
-                }
-                .tag(SettingsTab.general)
-
-            ModelsSettingsView(manager: modelManager)
-                .tabItem {
-                    Label("Модели", systemImage: "cpu")
-                }
-                .tag(SettingsTab.models)
-
-            statsTab
-                .tabItem {
-                    Label("Статистика", systemImage: "chart.bar")
-                }
-                .tag(SettingsTab.stats)
+        NavigationSplitView {
+            List(SettingsTab.allCases, selection: $selectedTab) { tab in
+                Label(tab.title, systemImage: tab.systemImage)
+                    .tag(tab)
+            }
+            .listStyle(.sidebar)
+        } detail: {
+            detailView
         }
         .frame(minWidth: 860, minHeight: 680)
         .onAppear {
@@ -214,6 +228,18 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var detailView: some View {
+        switch selectedTab ?? .general {
+        case .general:
+            generalTab
+        case .models:
+            modelsTab
+        case .stats:
+            statsTab
+        }
+    }
+
     private var generalTab: some View {
         Form {
             Section("Общие") {
@@ -224,8 +250,9 @@ struct SettingsView: View {
                         viewModel.applyLaunchAtLogin(newValue)
                     }
                 ))
+                .padding(.vertical, 2)
 
-                settingsRow(label: "Горячая клавиша") {
+                LabeledContent("Горячая клавиша") {
                     Picker("", selection: Binding(
                         get: { hotkey },
                         set: { newValue in
@@ -241,35 +268,87 @@ struct SettingsView: View {
                     .controlSize(.large)
                     .frame(width: pickerWidth)
                 }
+                .padding(.vertical, 2)
 
-                settingsRow(label: "Язык") {
-                    Picker("", selection: Binding(
-                        get: { languageMode },
-                        set: { newValue in
-                            languageMode = newValue
-                            viewModel.applyLanguageMode(newValue)
+                LabeledContent("Язык") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Picker("", selection: Binding(
+                            get: { languageMode },
+                            set: { newValue in
+                                languageMode = newValue
+                                viewModel.applyLanguageMode(newValue)
+                            }
+                        )) {
+                            ForEach(LanguageMode.allCases, id: \.rawValue) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
                         }
-                    )) {
-                        ForEach(LanguageMode.allCases, id: \.rawValue) { mode in
-                            Text(mode.title).tag(mode.rawValue)
-                        }
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: pickerWidth)
+
+                        Text("Определяет язык распознавания")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .labelsHidden()
-                    .controlSize(.large)
-                    .frame(width: pickerWidth)
                 }
+                .padding(.vertical, 2)
+
+                LabeledContent("Режим качества") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Picker("", selection: $qualityMode) {
+                            Text("Fast").tag(QualityMode.fast.rawValue)
+                            Text("Balanced").tag(QualityMode.balanced.rawValue)
+                            Text("High").tag(QualityMode.high.rawValue)
+                        }
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: pickerWidth)
+
+                        Text("Влияет на скорость и точность финального распознавания")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
             }
 
-            Section("Текущая модель") {
-                HStack {
-                    Text("Активная")
-                    Spacer()
-                    Text(modelManager.activeModelDescriptor?.fileName ?? "Не выбрана")
+            Section("Модель") {
+                LabeledContent("Активная модель") {
+                    HStack(spacing: 10) {
+                        Text(activeModelTitle)
+                        if let modelSizeBadgeText {
+                            Text(modelSizeBadgeText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(.quaternary))
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+
+                LabeledContent("") {
+                    Text(installedModelsText)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+                .padding(.vertical, 2)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(24)
+    }
 
-                Text("Установлено: \(modelManager.installedModelIDs.count) модели")
-                    .foregroundStyle(.secondary)
+    private var modelsTab: some View {
+        Form {
+            Section {
+                ModelsSettingsView(manager: modelManager)
+                    .padding(.vertical, 2)
             }
         }
         .formStyle(.grouped)
@@ -299,13 +378,26 @@ struct SettingsView: View {
         .padding(24)
     }
 
-    private func settingsRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 12) {
-            Text(label)
-            Spacer(minLength: 12)
-            content()
-                .frame(width: controlsColumnWidth, alignment: .trailing)
+    private var activeModelTitle: String {
+        guard let descriptor = modelManager.activeModelDescriptor else {
+            return "Не выбрана"
         }
+        return "\(descriptor.displayName) (\(descriptor.quant))"
+    }
+
+    private var modelSizeBadgeText: String? {
+        guard let descriptor = modelManager.activeModelDescriptor else {
+            return nil
+        }
+        return "≈ \(descriptor.approxSizeMB) MB"
+    }
+
+    private var installedModelsText: String {
+        let count = modelManager.installedModelIDs.count
+        if count == 1 {
+            return "Установлена 1 модель"
+        }
+        return "Установлено \(count) моделей"
     }
 
     private func statsGridRow(_ title: String, _ value: String) -> some View {

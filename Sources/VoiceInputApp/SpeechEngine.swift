@@ -1,6 +1,12 @@
 import CWhisper
 import Foundation
 
+enum QualityMode: String, CaseIterable {
+    case fast
+    case balanced
+    case high
+}
+
 enum TranscriptionPass {
     case partial
     case final
@@ -53,18 +59,8 @@ actor SpeechEngine {
         }
 
         let hint = resolveHint(for: languageMode)
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-        params.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
-        params.no_timestamps = true
-        params.single_segment = true
-        params.suppress_blank = true
-        params.suppress_nst = false
-        params.max_tokens = 0
-        params.temperature = 0
-        params.greedy.best_of = 1
-        params.beam_search.beam_size = 1
-        params.no_context = true
-        params.audio_ctx = 0
+        let qualityMode = currentQualityMode()
+        var params = makeParams(pass: pass, qualityMode: qualityMode)
 
         let copiedHint = hint.flatMap { strdup($0) }
         var autoLanguage: UnsafeMutablePointer<CChar>?
@@ -106,6 +102,53 @@ actor SpeechEngine {
             detectedLanguageCode: detectedCode,
             confidence: confidence
         )
+    }
+
+    private func currentQualityMode() -> QualityMode {
+        let raw = UserDefaults.standard.string(forKey: "qualityMode") ?? QualityMode.balanced.rawValue
+        return QualityMode(rawValue: raw) ?? .balanced
+    }
+
+    private func makeParams(pass: TranscriptionPass, qualityMode: QualityMode) -> whisper_full_params {
+        let strategy: whisper_sampling_strategy = {
+            switch pass {
+            case .partial:
+                return WHISPER_SAMPLING_GREEDY
+            case .final:
+                return qualityMode == .high ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY
+            }
+        }()
+        var params = whisper_full_default_params(strategy)
+        params.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
+        params.no_timestamps = true
+        params.suppress_blank = true
+        params.temperature = 0
+        params.suppress_nst = false
+        params.max_tokens = 0
+        params.audio_ctx = 0
+
+        switch pass {
+        case .partial:
+            params.greedy.best_of = 1
+            params.no_context = true
+            params.single_segment = true
+        case .final:
+            switch qualityMode {
+            case .fast:
+                params.greedy.best_of = 1
+                params.no_context = true
+                params.single_segment = true
+            case .balanced:
+                params.greedy.best_of = 3
+                params.no_context = false
+                params.single_segment = false
+            case .high:
+                params.beam_search.beam_size = 4
+                params.no_context = false
+                params.single_segment = false
+            }
+        }
+        return params
     }
 
     private func ensureContext(modelPath: String) throws {
@@ -216,7 +259,7 @@ actor SpeechEngine {
             return
         }
 
-        guard confidence >= 0.45, let detectedCode else {
+        guard confidence >= 0.55, let detectedCode else {
             adaptiveLanguageHint = nil
             languageStreakCode = nil
             languageStreakCount = 0
