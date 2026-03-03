@@ -178,9 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var menuBarIconImage: NSImage?
     private var loadingIndicator: NSProgressIndicator?
-    private var recordingHaloWindow: NSWindow?
-    private var recordingHaloLayer: CAShapeLayer?
-    private var recordingHaloHighlightLayer: CAShapeLayer?
+    private let hudController = RecordingHUDController()
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var isRecording = false
@@ -343,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         partialLoopTask?.cancel()
         partialLoopTask = nil
         audioManager.stop()
-        stopRecordingHalo()
+        hudController.hide(immediately: true)
         if let globalFlagsMonitor {
             NSEvent.removeMonitor(globalFlagsMonitor)
         }
@@ -1168,7 +1166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingStartedAt = Date()
         lastPartialDraft = ""
         partialInferenceInFlight = false
-        startRecordingHalo()
+        hudController.show()
         showStatus("Recording...")
         do {
             try audioManager.start()
@@ -1178,7 +1176,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appendRuntimeDiagnostic("audio_engine_start_failed error=\(error.localizedDescription)")
             isRecording = false
             recordingStartedAt = nil
-            stopRecordingHalo()
             showStatus("Audio engine error")
         }
     }
@@ -1189,7 +1186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appendRuntimeDiagnostic("ptt_stop_requested")
         isRecording = false
-        stopRecordingHalo()
         partialLoopTask?.cancel()
         partialLoopTask = nil
         let sessionDuration = max(0.0, Date().timeIntervalSince(recordingStartedAt ?? Date()))
@@ -1327,8 +1323,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFinalTranscription(text: String, duration: Double, detectedLanguageCode: String?, confidence: Float) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        appendRuntimeDiagnostic("handle_final text_len=\(trimmedText.count)")
-        guard !trimmedText.isEmpty else {
+        let finalText = removeTrailingPeriod(trimmedText)
+        appendRuntimeDiagnostic("handle_final text_len=\(finalText.count)")
+        guard !finalText.isEmpty else {
             appendTranscriptionDiagnostic(
                 status: "rejected",
                 durationSeconds: duration,
@@ -1340,12 +1337,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let decision = shouldRejectTranscript(trimmedText, durationSeconds: duration)
+        let decision = shouldRejectTranscript(finalText, durationSeconds: duration)
         if decision.reject {
             appendTranscriptionDiagnostic(
                 status: "rejected",
                 durationSeconds: duration,
-                text: trimmedText,
+                text: finalText,
                 reason: decision.reason
             )
             showStatus("Артефакт распознавания (пропущено)")
@@ -1353,17 +1350,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        lastAcceptedTranscript = trimmedText
+        lastAcceptedTranscript = finalText
         let languagePart = detectedLanguageCode.map { "lang=\($0)" } ?? "lang=auto"
         appendTranscriptionDiagnostic(
             status: "accepted",
             durationSeconds: duration,
-            text: trimmedText,
+            text: finalText,
             reason: "\(languagePart),conf=\(String(format: "%.2f", confidence))"
         )
-        recordUsage(durationSeconds: duration, text: trimmedText)
+        recordUsage(durationSeconds: duration, text: finalText)
 
-        let pasted = pasteText(trimmedText)
+        let pasted = pasteText(finalText)
         if pasted {
             showStatus("Pasted")
             clearTransientData(clearClipboard: true)
@@ -1372,6 +1369,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clearTransientData(clearClipboard: false)
             showErrorAlert(title: "Auto-paste blocked", text: "Text is copied to clipboard. Grant Accessibility for Voice Input to allow auto-paste.")
         }
+    }
+
+    private func removeTrailingPeriod(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix(".") else { return trimmed }
+        return String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func pasteText(_ text: String) -> Bool {
@@ -1457,19 +1460,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem?.button {
             button.toolTip = "Voice Input - \(text)"
         }
-    }
-
-    private func startRecordingHalo() {
-        return
-    }
-
-    private func stopRecordingHalo() {
-        recordingHaloLayer?.removeAllAnimations()
-        recordingHaloHighlightLayer?.removeAllAnimations()
-        recordingHaloLayer = nil
-        recordingHaloHighlightLayer = nil
-        recordingHaloWindow?.orderOut(nil)
-        recordingHaloWindow = nil
     }
 
     private func beginActivity() {
