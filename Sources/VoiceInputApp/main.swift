@@ -179,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarIconImage: NSImage?
     private var loadingIndicator: NSProgressIndicator?
     private let hudController = RecordingHUDController()
+    private let learningHUDController = LearningFeedbackHUDController()
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var isRecording = false
@@ -206,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let transcribeModelDefaultsKey = "voice_input_transcribe_model"
     private let languageModeDefaultsKey = "voice_input_language_mode"
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
+    private let maxRecordingSecondsDefaultsKey = "voice_input_max_recording_seconds"
     private var hotkeyMode: HotkeyMode = .shiftOption
     private var transcribeModel: TranscribeModel = .mediumQ5
     private var languageMode: LanguageMode = .auto
@@ -218,6 +220,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clipboardRestoreState: ClipboardRestoreState?
     private var usageStats = UsageStats()
     private var lastAcceptedTranscript: String = ""
+    private var lastInsertedTranscript: String = ""
+    private var lastInsertedAt: Date?
+    private var wasControlPressed = false
+    private var lastControlTapAt: Date?
+    private let doubleControlInterval: TimeInterval = 0.42
+    private let learningSourceMaxAge: TimeInterval = 900
+    private lazy var correctionEngine: CorrectionEngine = {
+        CorrectionEngine(storageURL: URL(fileURLWithPath: correctionsFilePath))
+    }()
     private let managedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-large-v3-turbo-q5_0.bin"]
     private let legacyManagedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-medium.bin", "ggml-small.bin"]
     private let dayKeyFormatter: DateFormatter = {
@@ -236,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadHotkeyMode()
         loadTranscribeModel()
         loadLanguageMode()
+        _ = correctionEngine
         setupStatusItem()
         ensureAccessibilityPermission()
         ensureMicrophonePermission { _ in }
@@ -293,6 +305,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "\(appSupportDirectoryPath)/runtime_diagnostics.log"
     }
 
+    private var maxRecordingSeconds: Double {
+        let stored = UserDefaults.standard.double(forKey: maxRecordingSecondsDefaultsKey)
+        let value = stored > 0 ? stored : 20.0
+        return max(3.0, min(value, AudioManager.maxBufferSeconds))
+    }
+
+    private var correctionsFilePath: String {
+        return "\(appSupportDirectoryPath)/corrections.json"
+    }
+
     private var transcribeScriptPath: String? {
         if let bundled = Bundle.main.path(forResource: "ptt_whisper", ofType: "sh"),
            FileManager.default.isExecutableFile(atPath: bundled)
@@ -342,6 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         partialLoopTask = nil
         audioManager.stop()
         hudController.hide(immediately: true)
+        learningHUDController.hide(immediately: true)
         if let globalFlagsMonitor {
             NSEvent.removeMonitor(globalFlagsMonitor)
         }
@@ -785,17 +808,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupHotkeyMonitors() {
         let flagsHandler: (NSEvent) -> Void = { [weak self] event in
-            self?.handleFlagsChanged(event.modifierFlags)
+            self?.handleFlagsChanged(event)
         }
 
         globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: flagsHandler)
         localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleFlagsChanged(event.modifierFlags)
+            self?.handleFlagsChanged(event)
             return event
         }
     }
 
-    private func handleFlagsChanged(_ flags: NSEvent.ModifierFlags) {
+    private func handleFlagsChanged(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        handleDoubleControlLearningHotkey(flags: flags)
+
         let hotkeyHeld = hotkeyMode.isPressed(flags: flags)
         if hotkeyHeld && !isRecording {
             startRecording()
@@ -803,6 +829,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if !hotkeyHeld && isRecording {
             stopRecordingAndPaste()
+        }
+    }
+
+    private func handleDoubleControlLearningHotkey(flags: NSEvent.ModifierFlags) {
+        let controlPressed = flags.contains(.control)
+        let onlyControlPressed = flags == [.control]
+        defer { wasControlPressed = controlPressed }
+
+        guard controlPressed, !wasControlPressed, onlyControlPressed else {
+            return
+        }
+
+        let now = Date()
+        if let lastTap = lastControlTapAt, now.timeIntervalSince(lastTap) <= doubleControlInterval {
+            lastControlTapAt = nil
+            triggerLearningFromSelection()
+        } else {
+            lastControlTapAt = now
         }
     }
 
@@ -1205,7 +1249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         showStatus("Transcribing...")
-        let finalSamples = audioManager.snapshotSpeechSamples()
+        let finalSamples = audioManager.snapshotSpeechSamples(maxSeconds: maxRecordingSeconds)
         appendRuntimeDiagnostic("final_samples_count=\(finalSamples.count)")
         if finalSamples.count < 320 {
             appendTranscriptionDiagnostic(
@@ -1291,7 +1335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !self.isRecording { return }
                 if self.partialInferenceInFlight { continue }
                 self.partialInferenceInFlight = true
-                let samples = self.audioManager.snapshotSpeechSamples()
+                let samples = self.audioManager.snapshotSpeechSamples(maxSeconds: self.maxRecordingSeconds)
                 if samples.count < 1600 {
                     self.appendRuntimeDiagnostic("partial_skip_small_buffer samples=\(samples.count)")
                     self.partialInferenceInFlight = false
@@ -1323,7 +1367,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFinalTranscription(text: String, duration: Double, detectedLanguageCode: String?, confidence: Float) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalText = removeTrailingPeriod(trimmedText)
+        let noTrailingDot = removeTrailingPeriod(trimmedText)
+        let correctedText = correctionEngine.correct(noTrailingDot)
+        let finalText = correctedText.trimmingCharacters(in: .whitespacesAndNewlines)
         appendRuntimeDiagnostic("handle_final text_len=\(finalText.count)")
         guard !finalText.isEmpty else {
             appendTranscriptionDiagnostic(
@@ -1359,6 +1405,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reason: "\(languagePart),conf=\(String(format: "%.2f", confidence))"
         )
         recordUsage(durationSeconds: duration, text: finalText)
+        lastInsertedTranscript = finalText
+        lastInsertedAt = Date()
 
         let pasted = pasteText(finalText)
         if pasted {
@@ -1377,6 +1425,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func triggerLearningFromSelection() {
+        guard !isRecording else { return }
+        guard let lastInsertedAt, Date().timeIntervalSince(lastInsertedAt) <= learningSourceMaxAge else {
+            showLearningFeedback("Learning: no recent dictated text")
+            return
+        }
+        guard !lastInsertedTranscript.isEmpty else {
+            showLearningFeedback("Learning: no source text")
+            return
+        }
+        guard let correctedSelection = captureSelectedTextForLearning(), !correctedSelection.isEmpty else {
+            showLearningFeedback("Learning: select corrected text")
+            return
+        }
+
+        let learnedCount = correctionEngine.learn(fromOriginal: lastInsertedTranscript, corrected: correctedSelection)
+        if learnedCount > 0 {
+            appendRuntimeDiagnostic("learning_saved count=\(learnedCount)")
+            showLearningFeedback("Learning: saved \(learnedCount) correction(s)")
+        } else {
+            showLearningFeedback("Learning: no diff detected")
+        }
+    }
+
+    private func showLearningFeedback(_ text: String) {
+        showStatus(text)
+        learningHUDController.show(text)
+    }
+
+    private func captureSelectedTextForLearning() -> String? {
+        guard AXIsProcessTrusted() else {
+            return nil
+        }
+
+        let board = NSPasteboard.general
+        let snapshot = snapshotClipboard(board)
+        let baselineChangeCount = board.changeCount
+
+        sendCommandShortcut(keyCode: 8) // Cmd+C
+
+        let deadline = Date().addingTimeInterval(0.22)
+        while Date() < deadline, board.changeCount == baselineChangeCount {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        guard board.changeCount != baselineChangeCount else {
+            return nil
+        }
+
+        let selectedText = board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        restoreClipboardSnapshot(snapshot, to: board)
+        return selectedText
+    }
+
+    private func sendCommandShortcut(keyCode: CGKeyCode) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        cmdDown?.flags = .maskCommand
+        let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        cmdUp?.flags = .maskCommand
+        cmdDown?.post(tap: .cghidEventTap)
+        cmdUp?.post(tap: .cghidEventTap)
+    }
+
     private func pasteText(_ text: String) -> Bool {
         guard AXIsProcessTrusted() else {
             return false
@@ -1387,14 +1499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         board.setString(text, forType: .string)
         clipboardRestoreState = ClipboardRestoreState(snapshot: snapshot, expectedChangeCount: board.changeCount, injectedText: text)
 
-        let source = CGEventSource(stateID: .combinedSessionState)
-        let vKey: CGKeyCode = 9
-        let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true)
-        cmdDown?.flags = .maskCommand
-        let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
-        cmdUp?.flags = .maskCommand
-        cmdDown?.post(tap: .cghidEventTap)
-        cmdUp?.post(tap: .cghidEventTap)
+        sendCommandShortcut(keyCode: 9) // Cmd+V
         return true
     }
 
@@ -1433,6 +1538,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let restoredItems: [NSPasteboardItem] = state.snapshot.items.map { saved in
+            let item = NSPasteboardItem()
+            for (typeRaw, data) in saved {
+                item.setData(data, forType: NSPasteboard.PasteboardType(typeRaw))
+            }
+            return item
+        }
+        board.writeObjects(restoredItems)
+    }
+
+    private func restoreClipboardSnapshot(_ snapshot: ClipboardSnapshot, to board: NSPasteboard) {
+        board.clearContents()
+        guard !snapshot.items.isEmpty else { return }
+        let restoredItems: [NSPasteboardItem] = snapshot.items.map { saved in
             let item = NSPasteboardItem()
             for (typeRaw, data) in saved {
                 item.setData(data, forType: NSPasteboard.PasteboardType(typeRaw))

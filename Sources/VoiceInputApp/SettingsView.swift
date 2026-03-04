@@ -192,11 +192,13 @@ struct SettingsView: View {
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
     @AppStorage("voice_input_language_mode") private var languageMode = LanguageMode.auto.rawValue
     @AppStorage("qualityMode") private var qualityMode = QualityMode.balanced.rawValue
+    @AppStorage("voice_input_max_recording_seconds") private var maxRecordingSeconds = 20.0
 
     @State private var selectedTab: SettingsTab? = .general
     @StateObject private var modelManager: ModelManager
 
     private let pickerWidth: CGFloat = 280
+    private let recordingLimitOptions: [Double] = [10, 15, 20, 30, 45, 60]
 
     init(viewModel: SettingsViewModel) {
         self.viewModel = viewModel
@@ -294,23 +296,6 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 2)
 
-                LabeledContent("Режим качества") {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Picker("", selection: $qualityMode) {
-                            Text("Fast").tag(QualityMode.fast.rawValue)
-                            Text("Balanced").tag(QualityMode.balanced.rawValue)
-                            Text("High").tag(QualityMode.high.rawValue)
-                        }
-                        .labelsHidden()
-                        .controlSize(.large)
-                        .frame(width: pickerWidth)
-
-                        Text("Влияет на скорость и точность финального распознавания")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 2)
             }
 
             Section("Модель") {
@@ -337,6 +322,44 @@ struct SettingsView: View {
                 .labelsHidden()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityHidden(true)
+                .padding(.vertical, 2)
+            }
+
+            Section("Качество") {
+                LabeledContent("Режим качества") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Picker("", selection: $qualityMode) {
+                            Text("Fast").tag(QualityMode.fast.rawValue)
+                            Text("Balanced").tag(QualityMode.balanced.rawValue)
+                            Text("High").tag(QualityMode.high.rawValue)
+                        }
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: pickerWidth)
+
+                        Text("Влияет на скорость и точность финального распознавания")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+
+                LabeledContent("Лимит диктовки") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Picker("", selection: $maxRecordingSeconds) {
+                            ForEach(recordingLimitOptions, id: \.self) { value in
+                                Text("\(Int(value)) сек").tag(value)
+                            }
+                        }
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: pickerWidth)
+
+                        Text("Используется как максимальная длина фразы для распознавания")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 .padding(.vertical, 2)
             }
         }
