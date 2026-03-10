@@ -62,8 +62,8 @@ private struct NotchHUDMetrics: Equatable {
 
 private struct FloatingParticle: Identifiable {
     enum Side {
-        case left
-        case right
+        case screenLeft
+        case screenRight
     }
 
     let id = UUID()
@@ -128,8 +128,8 @@ private final class NotchAnimationViewModel: ObservableObject {
 
     private func spawnParticles() {
         guard let metrics else { return }
-        particles.append(makeParticle(side: .left, metrics: metrics))
-        particles.append(makeParticle(side: .right, metrics: metrics))
+        particles.append(makeParticle(side: .screenLeft, metrics: metrics))
+        particles.append(makeParticle(side: .screenRight, metrics: metrics))
         if particles.count > 36 {
             particles.removeFirst(particles.count - 36)
         }
@@ -146,33 +146,33 @@ private final class NotchAnimationViewModel: ObservableObject {
         let notchMinX = metrics.notchRect.minX
         let notchMaxX = metrics.notchRect.maxX
         let sideTravel = max(36, min(72, min(metrics.leftAuxiliaryRect.width, metrics.rightAuxiliaryRect.width) * 0.16))
-        let leftTravel = max(sideTravel + 24, min(110, metrics.leftAuxiliaryRect.width * 0.32))
-        let leftStart = max(metrics.leftAuxiliaryRect.minX + 6, notchMinX - leftTravel)
+        let leftTravel = max(sideTravel + 42, min(142, metrics.leftAuxiliaryRect.width * 0.42))
+        let leftStart = max(metrics.leftAuxiliaryRect.minX + 4, notchMinX - leftTravel)
         let leftEnd = notchMinX - 6
         let rightStart = notchMaxX + 6
         let rightEnd = min(metrics.rightAuxiliaryRect.maxX - 8, notchMaxX + sideTravel)
 
-        if side == .left {
+        if side == .screenLeft {
             return FloatingParticle(
-                side: .left,
+                side: .screenLeft,
                 text: soundMarks.randomElement() ?? "♪",
                 startX: leftStart,
                 endX: leftEnd,
                 startY: startY,
                 endY: endY,
-                controlX: notchMinX - CGFloat.random(in: 24...42),
+                controlX: notchMinX - CGFloat.random(in: 30...54),
                 controlY: CGFloat.random(in: minY...maxY),
                 duration: duration,
                 color: Color(red: 0.72, green: 0.96, blue: 1.0),
                 glowColor: Color(red: 0.44, green: 0.84, blue: 1.0),
-                fontSize: min(13, max(9.5, bandHeight - 13)),
+                fontSize: min(14.5, max(10.5, bandHeight - 11)),
                 weight: .heavy
             )
         }
 
         let emitsCode = Bool.random()
         return FloatingParticle(
-            side: .right,
+            side: .screenRight,
             text: emitsCode ? (codeSnippets.randomElement() ?? "transcribe()") : (words.randomElement() ?? "voice"),
             startX: rightStart,
             endX: rightEnd,
@@ -317,7 +317,7 @@ private struct BeamLines: View {
 
     var body: some View {
         let horizontalSpan = max(58, min(126, min(metrics.leftAuxiliaryRect.width, metrics.rightAuxiliaryRect.width) * 0.24))
-        let leftSpan = max(horizontalSpan + 28, min(154, metrics.leftAuxiliaryRect.width * 0.38))
+        let leftSpan = max(horizontalSpan + 44, min(176, metrics.leftAuxiliaryRect.width * 0.48))
         let leftStart = max(metrics.leftAuxiliaryRect.minX, metrics.notchRect.minX - leftSpan)
         let leftEnd = metrics.notchRect.minX
         let rightStart = metrics.notchRect.maxX
@@ -428,18 +428,23 @@ private struct RecordingHUDView: View {
     @StateObject private var animationViewModel = NotchAnimationViewModel()
 
     var body: some View {
-        ZStack {
-            BeamLines(metrics: state.metrics)
+        Group {
+            if state.isVisible {
+                ZStack {
+                    BeamLines(metrics: state.metrics)
 
-            ForEach(animationViewModel.particles) { particle in
-                ParticleView(particle: particle)
+                    ForEach(animationViewModel.particles) { particle in
+                        ParticleView(particle: particle)
+                    }
+
+                    NotchView(metrics: state.metrics, isVisible: true)
+                }
+                .drawingGroup()
+            } else {
+                Color.clear
             }
-
-            NotchView(metrics: state.metrics, isVisible: state.isVisible)
         }
         .frame(width: state.metrics.panelFrame.width, height: state.metrics.bandHeight)
-        .drawingGroup()
-        .opacity(state.isVisible ? 1 : 0)
         .onChange(of: state.isVisible) { _, isVisible in
             if isVisible {
                 animationViewModel.start(metrics: state.metrics)
