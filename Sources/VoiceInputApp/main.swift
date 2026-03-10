@@ -1,10 +1,11 @@
 import AppKit
-import ApplicationServices
+@preconcurrency import ApplicationServices
 import AVFoundation
 import Foundation
 import QuartzCore
 import ServiceManagement
 import SwiftUI
+import WidgetKit
 
 enum HotkeyMode: String, CaseIterable {
     case shiftOption
@@ -104,20 +105,34 @@ enum TranscribeModel: String, CaseIterable {
 }
 
 final class SettingsWindow: NSWindow {
-    override func keyDown(with event: NSEvent) {
+    private func handleCloseShortcut(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = event.charactersIgnoringModifiers?.lowercased()
 
         if event.keyCode == 53 {
             performClose(nil)
-            return
+            return true
         }
         if modifiers.contains(.command), key == "w" {
             performClose(nil)
+            return true
+        }
+        return false
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if handleCloseShortcut(event) {
             return
         }
 
         super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleCloseShortcut(event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     override func cancelOperation(_ sender: Any?) {
@@ -207,7 +222,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let transcribeModelDefaultsKey = "voice_input_transcribe_model"
     private let languageModeDefaultsKey = "voice_input_language_mode"
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
-    private let showsMenuBarIconDefaultsKey = "voice_input_show_menu_bar_icon"
     private let maxRecordingSecondsDefaultsKey = "voice_input_max_recording_seconds"
     private var hotkeyMode: HotkeyMode = .shiftOption
     private var transcribeModel: TranscribeModel = .mediumQ5
@@ -249,6 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadTranscribeModel()
         loadLanguageMode()
         _ = correctionEngine
+        installOpenURLHandler()
         updateStatusItemVisibility()
         ensureAccessibilityPermission()
         ensureMicrophonePermission { _ in }
@@ -258,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.openSettingsWindow()
             }
         }
+        reloadControlCenterStatus()
         Task { [weak self] in
             guard let self else { return }
             let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
@@ -374,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        reloadControlCenterStatus()
         partialLoopTask?.cancel()
         partialLoopTask = nil
         audioManager.stop()
@@ -703,11 +720,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showsMenuBarIcon() -> Bool {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: showsMenuBarIconDefaultsKey) == nil {
-            return true
+        VoiceInputShared.showsMenuBarIcon()
+    }
+
+    private func installOpenURLHandler() {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        guard
+            let rawURL = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+            let url = URL(string: rawURL),
+            url.scheme == VoiceInputShared.openURLScheme,
+            url.host == VoiceInputShared.openURLHost
+        else {
+            return
         }
-        return defaults.bool(forKey: showsMenuBarIconDefaultsKey)
+
+        NSApp.activate(ignoringOtherApps: true)
+        if !showsMenuBarIcon() {
+            openSettingsWindow()
+        }
+    }
+
+    private func reloadControlCenterStatus() {
+        if #available(macOS 26.0, *) {
+            ControlCenter.shared.reloadControls(ofKind: VoiceInputShared.controlKind)
+        }
     }
 
     private func sanitizedModelFileName(_ raw: String) -> String {
@@ -1266,6 +1310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startPartialLoop()
         } catch {
             appendRuntimeDiagnostic("audio_engine_start_failed error=\(error.localizedDescription)")
+            hudController.hide(immediately: true)
             isRecording = false
             recordingStartedAt = nil
             showStatus("Audio engine error")
@@ -1278,6 +1323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appendRuntimeDiagnostic("ptt_stop_requested")
         isRecording = false
+        hudController.hide()
         partialLoopTask?.cancel()
         partialLoopTask = nil
         let sessionDuration = max(0.0, Date().timeIntervalSince(recordingStartedAt ?? Date()))
@@ -1789,7 +1835,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func runShell(command: String, environment: [String: String]? = nil, completion: @escaping (Int32, String) -> Void) {
+    private final class ShellCompletionBox: @unchecked Sendable {
+        let handler: (Int32, String) -> Void
+
+        init(handler: @escaping (Int32, String) -> Void) {
+            self.handler = handler
+        }
+    }
+
+    private func runShell(
+        command: String,
+        environment: [String: String]? = nil,
+        completion: @escaping (Int32, String) -> Void
+    ) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", command]
@@ -1802,12 +1860,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let completionBox = ShellCompletionBox(handler: completion)
         process.terminationHandler = { proc in
             let out = stdout.fileHandleForReading.readDataToEndOfFile()
             let err = stderr.fileHandleForReading.readDataToEndOfFile()
             let output = (String(data: out, encoding: .utf8) ?? "") + (String(data: err, encoding: .utf8) ?? "")
             DispatchQueue.main.async {
-                completion(proc.terminationStatus, output)
+                completionBox.handler(proc.terminationStatus, output)
             }
         }
         do {
@@ -2126,7 +2185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setShowsMenuBarIcon(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: showsMenuBarIconDefaultsKey)
+        UserDefaults.standard.set(enabled, forKey: VoiceInputShared.showsMenuBarIconDefaultsKey)
         updateStatusItemVisibility()
         refreshSettingsWindow()
     }

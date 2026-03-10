@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -96,20 +97,22 @@ struct SettingsActions {
     var openModelsFolder: () -> Void
     var resetStats: () -> Void
 
-    static let mock = SettingsActions(
-        snapshot: { .mock },
-        setLaunchAtLogin: { _ in },
-        setShowsMenuBarIcon: { _ in },
-        setHotkey: { _ in },
-        setModel: { _ in },
-        setLanguageMode: { _ in },
-        checkUpdates: { completion in completion(.mock) },
-        updateModels: { completion in completion(.mock) },
-        addModelFromURL: { _, completion in completion(.mock) },
-        deleteModel: { _, completion in completion(.mock) },
-        openModelsFolder: {},
-        resetStats: {}
-    )
+    static var mock: SettingsActions {
+        SettingsActions(
+            snapshot: { .mock },
+            setLaunchAtLogin: { _ in },
+            setShowsMenuBarIcon: { _ in },
+            setHotkey: { _ in },
+            setModel: { _ in },
+            setLanguageMode: { _ in },
+            checkUpdates: { completion in completion(.mock) },
+            updateModels: { completion in completion(.mock) },
+            addModelFromURL: { _, completion in completion(.mock) },
+            deleteModel: { _, completion in completion(.mock) },
+            openModelsFolder: {},
+            resetStats: {}
+        )
+    }
 }
 
 final class SettingsViewModel: ObservableObject {
@@ -227,6 +230,9 @@ struct SettingsView: View {
             detailView
         }
         .frame(minWidth: 860, minHeight: 680)
+        .safeAreaInset(edge: .bottom) {
+            settingsFooter
+        }
         .onAppear {
             viewModel.reload()
             syncStorageFromSnapshot()
@@ -338,6 +344,19 @@ struct SettingsView: View {
             .padding(VISpacing.xl)
             .frame(width: VIConstants.settingsWidth, alignment: .leading)
         }
+    }
+
+    private var settingsFooter: some View {
+        HStack {
+            Spacer()
+            Button("Quit") {
+                NSApp.terminate(nil)
+            }
+            .keyboardShortcut("q", modifiers: [.command])
+        }
+        .padding(.horizontal, VISpacing.xl)
+        .padding(.vertical, VISpacing.m)
+        .background(.ultraThinMaterial)
     }
 
     private var activeModelTitle: String {

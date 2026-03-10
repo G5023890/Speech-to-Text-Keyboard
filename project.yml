@@ -1,0 +1,78 @@
+name: Voice Input
+options:
+  bundleIdPrefix: com.grigorym
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_VERSION: "5.10"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: 8FJN73UDTT
+targets:
+  Voice Input:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/VoiceInputApp
+      - path: Resources/taskbar_Mic.png
+        buildPhase: resources
+      - path: scripts/ptt_whisper.sh
+        buildPhase: resources
+      - path: config/glossary.txt
+        buildPhase: resources
+      - path: assets/AppIcon.icns
+        buildPhase: resources
+    dependencies:
+      - target: VoiceInputControlsExtension
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: "Voice Input"
+        PRODUCT_MODULE_NAME: VoiceInputApp
+        EXECUTABLE_NAME: VoiceInputApp
+        PRODUCT_BUNDLE_IDENTIFIER: com.grigorym.voiceinput
+        INFOPLIST_FILE: Config/VoiceInputApp-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Config/VoiceInputApp.entitlements
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/Sources/CWhisper
+          - /opt/homebrew/opt/whisper-cpp/include
+          - /opt/homebrew/opt/whisper-cpp/libexec/include
+        LIBRARY_SEARCH_PATHS:
+          - /opt/homebrew/opt/whisper-cpp/lib
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - /opt/homebrew/opt/whisper-cpp/lib
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -lwhisper
+        OTHER_SWIFT_FLAGS:
+          - $(inherited)
+          - -Xcc
+          - -fmodule-map-file=$(SRCROOT)/Sources/CWhisper/module.modulemap
+  VoiceInputControlsExtension:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/VoiceInputControlsExtension
+      - path: Sources/VoiceInputApp/VoiceInputShared.swift
+    settings:
+      base:
+        PRODUCT_NAME: VoiceInputControlsExtension
+        PRODUCT_MODULE_NAME: VoiceInputControlsExtension
+        EXECUTABLE_NAME: VoiceInputControlsExtension
+        PRODUCT_BUNDLE_IDENTIFIER: com.grigorym.voiceinput.controls
+        INFOPLIST_FILE: Config/VoiceInputControlsExtension-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Config/VoiceInputControlsExtension.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+schemes:
+  Voice Input:
+    build:
+      targets:
+        Voice Input: all

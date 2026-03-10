@@ -180,4 +180,4 @@ WHISPER_BEST_OF=1
 
 SPDX-License-Identifier: Apache-2.0
 
-See [LICENSE](/Users/grigorymordokhovich/Documents/Develop/Voice%20input/LICENSE).
+See `~/Documents/Develop/Voice input/LICENSE`.

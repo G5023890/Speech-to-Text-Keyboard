@@ -6,6 +6,15 @@ final class AudioManager {
     // Keep a larger rolling window; active dictation limit is applied at snapshot time.
     static let maxBufferSeconds: Double = 60.0
 
+    private final class InputBufferBox: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+        var consumed = false
+
+        init(buffer: AVAudioPCMBuffer) {
+            self.buffer = buffer
+        }
+    }
+
     private let engine = AVAudioEngine()
     private let processingQueue = DispatchQueue(label: "voiceinput.audio.processing")
     private let ringBuffer = RingBuffer(capacity: Int(targetSampleRate * maxBufferSeconds))
@@ -76,16 +85,16 @@ final class AudioManager {
             return
         }
 
-        var consumed = false
+        let bufferBox = InputBufferBox(buffer: buffer)
         var error: NSError?
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if consumed {
+            if bufferBox.consumed {
                 outStatus.pointee = .noDataNow
                 return nil
             }
-            consumed = true
+            bufferBox.consumed = true
             outStatus.pointee = .haveData
-            return buffer
+            return bufferBox.buffer
         }
 
         _ = converter.convert(to: converted, error: &error, withInputFrom: inputBlock)
