@@ -1,6 +1,6 @@
 # Voice Input (Menu Bar PTT, ru+en+he)
 
-Release: `1.0`
+Release: `1.6.1`
 
 Local push-to-talk speech-to-text for macOS:
 - hold selected hotkey combo to record

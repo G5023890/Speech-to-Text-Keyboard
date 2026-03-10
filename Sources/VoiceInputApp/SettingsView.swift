@@ -48,6 +48,7 @@ struct SettingsStats: Equatable {
 
 struct SettingsSnapshot: Equatable {
     var launchAtLoginEnabled: Bool
+    var showsMenuBarIcon: Bool
     var selectedHotkey: String
     var selectedModelID: String
     var selectedLanguageMode: String
@@ -64,6 +65,7 @@ struct SettingsSnapshot: Equatable {
 
     static let mock = SettingsSnapshot(
         launchAtLoginEnabled: true,
+        showsMenuBarIcon: true,
         selectedHotkey: HotkeyMode.shiftOption.rawValue,
         selectedModelID: TranscribeModel.mediumQ5.rawValue,
         selectedLanguageMode: LanguageMode.auto.rawValue,
@@ -83,6 +85,7 @@ struct SettingsSnapshot: Equatable {
 struct SettingsActions {
     var snapshot: () -> SettingsSnapshot
     var setLaunchAtLogin: (Bool) -> Void
+    var setShowsMenuBarIcon: (Bool) -> Void
     var setHotkey: (String) -> Void
     var setModel: (String) -> Void
     var setLanguageMode: (String) -> Void
@@ -96,6 +99,7 @@ struct SettingsActions {
     static let mock = SettingsActions(
         snapshot: { .mock },
         setLaunchAtLogin: { _ in },
+        setShowsMenuBarIcon: { _ in },
         setHotkey: { _ in },
         setModel: { _ in },
         setLanguageMode: { _ in },
@@ -130,6 +134,11 @@ final class SettingsViewModel: ObservableObject {
 
     func applyLaunchAtLogin(_ enabled: Bool) {
         actions.setLaunchAtLogin(enabled)
+        reload()
+    }
+
+    func applyShowsMenuBarIcon(_ enabled: Bool) {
+        actions.setShowsMenuBarIcon(enabled)
         reload()
     }
 
@@ -188,6 +197,7 @@ struct SettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     @AppStorage("voice_input_launch_at_login") private var launchAtLogin = false
+    @AppStorage("voice_input_show_menu_bar_icon") private var showsMenuBarIcon = true
     @AppStorage("voice_input_hotkey_mode") private var hotkey = HotkeyMode.shiftOption.rawValue
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
     @AppStorage("voice_input_language_mode") private var languageMode = LanguageMode.auto.rawValue
@@ -254,6 +264,17 @@ struct SettingsView: View {
                             set: { newValue in
                                 launchAtLogin = newValue
                                 viewModel.applyLaunchAtLogin(newValue)
+                            }
+                        )
+                    )
+
+                    SettingsToggleRow(
+                        title: "Показывать в menu bar",
+                        value: Binding(
+                            get: { showsMenuBarIcon },
+                            set: { newValue in
+                                showsMenuBarIcon = newValue
+                                viewModel.applyShowsMenuBarIcon(newValue)
                             }
                         )
                     )
@@ -383,6 +404,7 @@ struct SettingsView: View {
 
     private func syncStorageFromSnapshot() {
         launchAtLogin = viewModel.snapshot.launchAtLoginEnabled
+        showsMenuBarIcon = viewModel.snapshot.showsMenuBarIcon
         hotkey = viewModel.snapshot.selectedHotkey
         selectedModelID = viewModel.snapshot.selectedModelID
         languageMode = viewModel.snapshot.selectedLanguageMode

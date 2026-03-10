@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let transcribeModelDefaultsKey = "voice_input_transcribe_model"
     private let languageModeDefaultsKey = "voice_input_language_mode"
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
+    private let showsMenuBarIconDefaultsKey = "voice_input_show_menu_bar_icon"
     private let maxRecordingSecondsDefaultsKey = "voice_input_max_recording_seconds"
     private var hotkeyMode: HotkeyMode = .shiftOption
     private var transcribeModel: TranscribeModel = .mediumQ5
@@ -248,16 +249,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadTranscribeModel()
         loadLanguageMode()
         _ = correctionEngine
-        setupStatusItem()
+        updateStatusItemVisibility()
         ensureAccessibilityPermission()
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
+        if !showsMenuBarIcon() {
+            DispatchQueue.main.async { [weak self] in
+                self?.openSettingsWindow()
+            }
+        }
         Task { [weak self] in
             guard let self else { return }
             let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
             try? await SpeechEngine.shared.warmup(modelPath: modelPath)
         }
         showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !showsMenuBarIcon() {
+            openSettingsWindow()
+            return false
+        }
+        return false
     }
 
     private var appSupportDirectoryPath: String {
@@ -374,6 +388,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupStatusItem() {
+        guard statusItem == nil else {
+            return
+        }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
             if let image = loadMenuBarIcon() {
@@ -415,6 +432,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         item.menu = menu
         statusItem = item
+        updateMenuBarLoadingState()
+    }
+
+    private func removeStatusItem() {
+        guard let statusItem else {
+            return
+        }
+        NSStatusBar.system.removeStatusItem(statusItem)
+        self.statusItem = nil
+        menuBarIconImage = nil
+        loadingIndicator = nil
+    }
+
+    private func updateStatusItemVisibility() {
+        if showsMenuBarIcon() {
+            setupStatusItem()
+        } else {
+            removeStatusItem()
+        }
     }
 
     private func prepareSettingsStateItems() {
@@ -523,6 +559,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             setLaunchAtLogin: { [weak self] enabled in
                 self?.setLaunchAtLogin(enabled)
+            },
+            setShowsMenuBarIcon: { [weak self] enabled in
+                self?.setShowsMenuBarIcon(enabled)
             },
             setHotkey: { [weak self] rawValue in
                 self?.setHotkey(rawValue: rawValue)
@@ -633,6 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         return SettingsSnapshot(
             launchAtLoginEnabled: isLaunchAtLoginEnabled(),
+            showsMenuBarIcon: showsMenuBarIcon(),
             selectedHotkey: hotkeyMode.rawValue,
             selectedModelID: transcribeModel.rawValue,
             selectedLanguageMode: languageMode.rawValue,
@@ -660,6 +700,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "Последняя проверка: \(state.replacingOccurrences(of: "Обновление моделей: ", with: ""))"
         }
         return "Проверка обновлений еще не выполнялась"
+    }
+
+    private func showsMenuBarIcon() -> Bool {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: showsMenuBarIconDefaultsKey) == nil {
+            return true
+        }
+        return defaults.bool(forKey: showsMenuBarIconDefaultsKey)
     }
 
     private func sanitizedModelFileName(_ raw: String) -> String {
@@ -1138,7 +1186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         var launchEnabled = false
-        if #available(macOS 13.0, *) {
+        if #available(macOS 26.0, *) {
             switch SMAppService.mainApp.status {
             case .enabled:
                 launchAtLoginItem.state = .on
@@ -1158,7 +1206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isLaunchAtLoginEnabled() -> Bool {
-        if #available(macOS 13.0, *) {
+        if #available(macOS 26.0, *) {
             switch SMAppService.mainApp.status {
             case .enabled, .requiresApproval:
                 return true
@@ -2077,12 +2125,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title), lang: \(mode.title)")
     }
 
+    private func setShowsMenuBarIcon(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: showsMenuBarIconDefaultsKey)
+        updateStatusItemVisibility()
+        refreshSettingsWindow()
+    }
+
     @objc private func toggleLaunchAtLogin() {
         setLaunchAtLogin(!isLaunchAtLoginEnabled())
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
-        if #unavailable(macOS 13.0) {
+        if #unavailable(macOS 26.0) {
             showStatus("Launch at Login unsupported on this macOS")
             UserDefaults.standard.set(false, forKey: launchAtLoginDefaultsKey)
             refreshSettingsWindow()
