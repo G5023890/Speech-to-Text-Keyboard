@@ -95,7 +95,7 @@ If **Show in menu bar** is disabled:
 
 - the status icon is hidden
 - the app stays running as a background accessory app
-- Settings opens automatically on launch
+- Settings does not open on the first launch
 - reopening the app shows Settings again
 
 ## Hotkey

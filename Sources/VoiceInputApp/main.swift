@@ -254,7 +254,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         ensureModelsDirectoryReady()
@@ -268,11 +267,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ensureAccessibilityPermission()
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
-        if !showsMenuBarIcon() {
-            DispatchQueue.main.async { [weak self] in
-                self?.openSettingsWindow()
-            }
-        }
         reloadControlCenterStatus()
         Task { [weak self] in
             guard let self else { return }
