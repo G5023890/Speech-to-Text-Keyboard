@@ -15,12 +15,26 @@ LEGACY_INSTALL_DIR="${LEGACY_INSTALL_DIR:-/Applications/SelectedTextOverlay.app}
 ICON_SOURCE="${ICON_SOURCE:-$PROJECT_DIR/assets/AppIcon.icns}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 DEVELOPER_DIR="${DEVELOPER_DIR:-}"
+BUNDLED_MODEL_SOURCE="${BUNDLED_MODEL_SOURCE:-$HOME/Library/Application Support/Voice Input/Models/ggml-small-q8_0.bin}"
+WHISPER_LIB_SOURCE="${WHISPER_LIB_SOURCE:-/opt/homebrew/opt/whisper-cpp/lib/libwhisper.1.dylib}"
+GGML_LIB_SOURCE="${GGML_LIB_SOURCE:-/opt/homebrew/opt/ggml/lib/libggml.0.dylib}"
+GGML_BASE_LIB_SOURCE="${GGML_BASE_LIB_SOURCE:-/opt/homebrew/opt/ggml/lib/libggml-base.0.dylib}"
+WHISPER_CLI_SOURCE="${WHISPER_CLI_SOURCE:-/opt/homebrew/opt/whisper-cpp/bin/whisper-cli}"
 RESOLVED_SIGN_IDENTITY=""
 DERIVED_DATA_DIR=""
 BUILD_APP_PATH=""
 
 log() {
   echo "[build] $*"
+}
+
+require_file() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -f "$path" ]]; then
+    echo "$label not found: $path" >&2
+    exit 1
+  fi
 }
 
 resolve_developer_dir() {
@@ -72,6 +86,12 @@ resolve_developer_dir
 export DEVELOPER_DIR
 resolve_sign_identity
 
+require_file "$WHISPER_LIB_SOURCE" "Bundled whisper library"
+require_file "$GGML_LIB_SOURCE" "Bundled ggml library"
+require_file "$GGML_BASE_LIB_SOURCE" "Bundled ggml-base library"
+require_file "$WHISPER_CLI_SOURCE" "Bundled whisper-cli binary"
+require_file "$BUNDLED_MODEL_SOURCE" "Bundled baseline model"
+
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "xcodegen is required but not installed" >&2
   exit 1
@@ -95,6 +115,63 @@ cleanup() {
 }
 trap cleanup EXIT
 
+bundle_runtime_dependencies() {
+  local app_path="$1"
+  local frameworks_dir="$app_path/Contents/Frameworks"
+  local resources_bin_dir="$app_path/Contents/Resources/bin"
+  local resources_models_dir="$app_path/Contents/Resources/Models"
+  local app_binary="$app_path/Contents/MacOS/VoiceInputApp"
+  local bundled_cli_path="$resources_bin_dir/whisper-cli"
+  local bundled_model_name
+  bundled_model_name="$(basename "$BUNDLED_MODEL_SOURCE")"
+
+  mkdir -p "$frameworks_dir"
+  mkdir -p "$resources_bin_dir"
+  mkdir -p "$resources_models_dir"
+
+  cp -fL "$WHISPER_LIB_SOURCE" "$frameworks_dir/libwhisper.1.dylib"
+  cp -fL "$GGML_LIB_SOURCE" "$frameworks_dir/libggml.0.dylib"
+  cp -fL "$GGML_BASE_LIB_SOURCE" "$frameworks_dir/libggml-base.0.dylib"
+  cp -fL "$WHISPER_CLI_SOURCE" "$bundled_cli_path"
+  cp -fL "$BUNDLED_MODEL_SOURCE" "$resources_models_dir/$bundled_model_name"
+
+  chmod u+w "$frameworks_dir/libwhisper.1.dylib" "$frameworks_dir/libggml.0.dylib" "$frameworks_dir/libggml-base.0.dylib"
+  chmod u+w "$bundled_cli_path"
+  chmod +x "$bundled_cli_path"
+  chmod u+w "$resources_models_dir/$bundled_model_name"
+  xattr -cr "$frameworks_dir" "$resources_bin_dir" "$resources_models_dir" || true
+
+  install_name_tool -id "@rpath/libwhisper.1.dylib" "$frameworks_dir/libwhisper.1.dylib"
+  install_name_tool -id "@rpath/libggml.0.dylib" "$frameworks_dir/libggml.0.dylib"
+  install_name_tool -id "@rpath/libggml-base.0.dylib" "$frameworks_dir/libggml-base.0.dylib"
+
+  install_name_tool -change "$WHISPER_LIB_SOURCE" "@executable_path/../Frameworks/libwhisper.1.dylib" "$app_binary"
+  install_name_tool -change "$GGML_LIB_SOURCE" "@loader_path/libggml.0.dylib" "$frameworks_dir/libwhisper.1.dylib"
+  install_name_tool -change "$GGML_BASE_LIB_SOURCE" "@loader_path/libggml-base.0.dylib" "$frameworks_dir/libwhisper.1.dylib"
+  install_name_tool -change "@rpath/libggml-base.0.dylib" "@loader_path/libggml-base.0.dylib" "$frameworks_dir/libggml.0.dylib"
+  install_name_tool -change "@rpath/libwhisper.1.dylib" "@executable_path/../../Frameworks/libwhisper.1.dylib" "$bundled_cli_path"
+  install_name_tool -change "$GGML_LIB_SOURCE" "@executable_path/../../Frameworks/libggml.0.dylib" "$bundled_cli_path"
+  install_name_tool -change "$GGML_BASE_LIB_SOURCE" "@executable_path/../../Frameworks/libggml-base.0.dylib" "$bundled_cli_path"
+}
+
+sign_app_bundle() {
+  local app_path="$1"
+  local frameworks_dir="$app_path/Contents/Frameworks"
+  local bundled_cli_path="$app_path/Contents/Resources/bin/whisper-cli"
+  chmod -R u+w "$app_path"
+  xattr -cr "$app_path" || true
+  if [[ -d "$frameworks_dir" ]]; then
+    find "$frameworks_dir" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' dylib_path; do
+      codesign --force --sign "$RESOLVED_SIGN_IDENTITY" "$dylib_path"
+    done
+  fi
+  if [[ -f "$bundled_cli_path" ]]; then
+    codesign --force --sign "$RESOLVED_SIGN_IDENTITY" "$bundled_cli_path"
+  fi
+  codesign --force --sign "$RESOLVED_SIGN_IDENTITY" --deep --preserve-metadata=identifier,entitlements,requirements,flags "$app_path"
+  codesign --verify --deep --strict "$app_path"
+}
+
 xcodebuild \
   -project "$PROJECT_DIR/$PROJECT_NAME" \
   -scheme "$SCHEME_NAME" \
@@ -111,18 +188,20 @@ if [[ ! -d "$BUILD_APP_PATH" ]]; then
   exit 1
 fi
 
+bundle_runtime_dependencies "$BUILD_APP_PATH"
+
 mkdir -p "$(dirname "$APP_DIR")"
 rm -rf "$APP_DIR"
 /usr/bin/ditto --norsrc "$BUILD_APP_PATH" "$APP_DIR"
 
+pkill -f "$INSTALL_DIR/Contents/MacOS/VoiceInputApp" || true
 rm -rf "$INSTALL_DIR"
 /usr/bin/ditto --norsrc "$BUILD_APP_PATH" "$INSTALL_DIR"
 if [[ "$LEGACY_INSTALL_DIR" != "$INSTALL_DIR" ]]; then
   rm -rf "$LEGACY_INSTALL_DIR"
 fi
 
-xattr -cr "$INSTALL_DIR" || true
-codesign --verify --deep --strict "$INSTALL_DIR"
+sign_app_bundle "$INSTALL_DIR"
 
 log "Built: $APP_DIR"
 log "Installed: $INSTALL_DIR"

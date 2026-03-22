@@ -224,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
     private let maxRecordingSecondsDefaultsKey = "voice_input_max_recording_seconds"
     private var hotkeyMode: HotkeyMode = .shiftOption
-    private var transcribeModel: TranscribeModel = .mediumQ5
+    private var transcribeModel: TranscribeModel = .smallQ8
     private var languageMode: LanguageMode = .auto
     private var modelUpdateInProgress = false
     private var updateCheckInProgress = false
@@ -241,6 +241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastControlTapAt: Date?
     private let doubleControlInterval: TimeInterval = 0.42
     private let learningSourceMaxAge: TimeInterval = 900
+    private let useNativeSpeechEngine = false
+    private let bundledBaselineModel: TranscribeModel = .smallQ8
     private lazy var correctionEngine: CorrectionEngine = {
         CorrectionEngine(storageURL: URL(fileURLWithPath: correctionsFilePath))
     }()
@@ -260,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadUsageStats()
         loadHotkeyMode()
         loadTranscribeModel()
+        reconcileSelectedModel()
         loadLanguageMode()
         _ = correctionEngine
         installOpenURLHandler()
@@ -268,10 +271,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
         reloadControlCenterStatus()
-        Task { [weak self] in
-            guard let self else { return }
-            let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
-            try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+        if useNativeSpeechEngine {
+            Task { [weak self] in
+                guard let self else { return }
+                let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
+                try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+            }
         }
         showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
     }
@@ -291,6 +296,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var modelsDirectoryPath: String {
         return "\(appSupportDirectoryPath)/Models"
+    }
+
+    private var bundledModelsDirectoryPath: String? {
+        Bundle.main.resourceURL?.appendingPathComponent("Models", isDirectory: true).path
+    }
+
+    private var bundledWhisperBinaryPath: String? {
+        guard let path = Bundle.main.resourceURL?.appendingPathComponent("bin/whisper-cli").path else {
+            return nil
+        }
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 
     private var legacyLowercaseModelsDirectoryPath: String {
@@ -356,8 +372,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(atPath: appSupportDirectoryPath, withIntermediateDirectories: true)
         try? fileManager.createDirectory(atPath: modelsDirectoryPath, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(atPath: downloadsDirectoryPath, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(atPath: catalogDirectoryPath, withIntermediateDirectories: true)
 
         if fileManager.fileExists(atPath: legacyLowercaseModelsDirectoryPath),
            let files = try? fileManager.contentsOfDirectory(atPath: legacyLowercaseModelsDirectoryPath)
@@ -380,6 +394,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if fileManager.fileExists(atPath: oldPath) {
                 try? fileManager.copyItem(atPath: oldPath, toPath: newPath)
             }
+        }
+
+        if let bundledModelsDirectoryPath,
+           fileManager.fileExists(atPath: bundledModelsDirectoryPath),
+           let files = try? fileManager.contentsOfDirectory(atPath: bundledModelsDirectoryPath)
+        {
+            for file in files where file.hasSuffix(".bin") {
+                let bundledPath = "\(bundledModelsDirectoryPath)/\(file)"
+                let destinationPath = "\(modelsDirectoryPath)/\(file)"
+                if !fileManager.fileExists(atPath: destinationPath) {
+                    try? fileManager.copyItem(atPath: bundledPath, toPath: destinationPath)
+                }
+            }
+        }
+    }
+
+    private func isModelInstalled(_ model: TranscribeModel) -> Bool {
+        FileManager.default.fileExists(atPath: "\(modelsDirectoryPath)/\(model.fileName)")
+    }
+
+    private func reconcileSelectedModel() {
+        if isModelInstalled(transcribeModel) {
+            return
+        }
+
+        if isModelInstalled(bundledBaselineModel) {
+            transcribeModel = bundledBaselineModel
+            saveTranscribeModel()
+            return
+        }
+
+        if let firstAvailable = TranscribeModel.allCases.first(where: isModelInstalled(_:)) {
+            transcribeModel = firstAvailable
+            saveTranscribeModel()
         }
     }
 
@@ -946,8 +994,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadTranscribeModel() {
-        let saved = UserDefaults.standard.string(forKey: transcribeModelDefaultsKey) ?? TranscribeModel.mediumQ5.rawValue
-        transcribeModel = TranscribeModel.fromPersisted(saved) ?? .mediumQ5
+        let saved = UserDefaults.standard.string(forKey: transcribeModelDefaultsKey) ?? bundledBaselineModel.rawValue
+        transcribeModel = TranscribeModel.fromPersisted(saved) ?? bundledBaselineModel
     }
 
     private func saveTranscribeModel() {
@@ -1355,29 +1403,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             do {
                 self.appendRuntimeDiagnostic("final_decode_started model_path=\(modelPath)")
-                let output = try await SpeechEngine.shared.transcribe(
-                    samples: finalSamples,
-                    modelPath: modelPath,
-                    languageMode: self.languageMode,
-                    pass: .final
-                )
-                var finalText = output.text
-                var finalLanguage = output.detectedLanguageCode
-                var finalConfidence = output.confidence
-                if finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                var finalText = ""
+                var finalLanguage = self.languageMode.whisperLanguageCode
+                var finalConfidence: Float = 0.55
+
+                if self.useNativeSpeechEngine {
+                    let output = try await SpeechEngine.shared.transcribe(
+                        samples: finalSamples,
+                        modelPath: modelPath,
+                        languageMode: self.languageMode,
+                        pass: .final
+                    )
+                    finalText = output.text
+                    finalLanguage = output.detectedLanguageCode
+                    finalConfidence = output.confidence
+                }
+
+                if !self.useNativeSpeechEngine || finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     self.appendRuntimeDiagnostic("native_empty_try_cli_fallback")
                     do {
-                        let fallbackText = try await self.transcribeViaScriptFallback(
+                        let fallback = try await self.transcribeViaScriptFallback(
                             samples: finalSamples,
                             modelPath: modelPath,
                             languageMode: self.languageMode
                         )
+                        let fallbackText = fallback.text
                         let fallbackTrimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
                         self.appendRuntimeDiagnostic("cli_fallback_done text_len=\(fallbackTrimmed.count)")
                         if !fallbackTrimmed.isEmpty {
                             finalText = fallbackTrimmed
-                            finalLanguage = self.languageMode.whisperLanguageCode ?? output.detectedLanguageCode
-                            finalConfidence = max(0.55, output.confidence)
+                            finalLanguage = fallback.languageCode ?? self.languageMode.whisperLanguageCode ?? finalLanguage
+                            finalConfidence = max(0.55, finalConfidence)
                         }
                     } catch {
                         self.appendRuntimeDiagnostic("cli_fallback_failed error=\(error.localizedDescription)")
@@ -1413,6 +1469,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startPartialLoop() {
+        guard useNativeSpeechEngine else {
+            partialLoopTask?.cancel()
+            partialLoopTask = nil
+            return
+        }
         partialLoopTask?.cancel()
         let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
         partialLoopTask = Task { [weak self] in
@@ -1453,20 +1514,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private struct SanitizedInsertionResult {
+        let text: String
+        let removedUnsupportedContent: Bool
+    }
+
+    private struct FallbackTranscriptionResult {
+        let text: String
+        let languageCode: String?
+    }
+
     private func handleFinalTranscription(text: String, duration: Double, detectedLanguageCode: String?, confidence: Float) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let noTrailingDot = removeTrailingPeriod(trimmedText)
         let correctedText = correctionEngine.correct(noTrailingDot)
-        let finalText = correctedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedResult = sanitizeInsertionText(correctedText)
+        let finalText = sanitizedResult.text
         appendRuntimeDiagnostic("handle_final text_len=\(finalText.count)")
         guard !finalText.isEmpty else {
             appendTranscriptionDiagnostic(
                 status: "rejected",
                 durationSeconds: duration,
                 text: "",
-                reason: "empty_output"
+                reason: sanitizedResult.removedUnsupportedContent ? "unsupported_language_only" : "empty_output"
             )
-            showStatus("No speech detected")
+            if sanitizedResult.removedUnsupportedContent {
+                appendRuntimeDiagnostic("unsupported_language_rejected")
+                showUnsupportedLanguageFeedback("Неподдерживаемый язык: вставка пропущена")
+            } else {
+                showStatus("No speech detected")
+            }
             clearTransientData(clearClipboard: false)
             return
         }
@@ -1498,7 +1575,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let pasted = pasteText(finalText)
         if pasted {
-            showStatus("Pasted")
+            if sanitizedResult.removedUnsupportedContent {
+                appendRuntimeDiagnostic("unsupported_language_trimmed")
+                showUnsupportedLanguageFeedback("Неподдерживаемые символы удалены")
+            } else {
+                showStatus("Pasted")
+            }
             clearTransientData(clearClipboard: true)
         } else {
             showStatus("Paste blocked, text copied")
@@ -1511,6 +1593,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasSuffix(".") else { return trimmed }
         return String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func sanitizeInsertionText(_ text: String) -> SanitizedInsertionResult {
+        let allowedPunctuation = CharacterSet(charactersIn: " \t\r\n.,!?;:'\"()[]{}<>«»„“”`~@#$%^&*-_=+/\\|0123456789")
+        let latin = CharacterSet(charactersIn: "A"..."Z").union(CharacterSet(charactersIn: "a"..."z"))
+        let cyrillic = CharacterSet(charactersIn: "\u{0400}"..."\u{04FF}")
+        let hebrew = CharacterSet(charactersIn: "\u{0590}"..."\u{05FF}")
+        let allowed = allowedPunctuation.union(latin).union(cyrillic).union(hebrew)
+
+        var removedUnsupportedContent = false
+        let scalars = text.unicodeScalars.map { scalar -> UnicodeScalar in
+            if allowed.contains(scalar) {
+                return scalar
+            }
+            if !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                removedUnsupportedContent = true
+            }
+            return " "
+        }
+        let collapsed = String(String.UnicodeScalarView(scalars))
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return SanitizedInsertionResult(text: collapsed, removedUnsupportedContent: removedUnsupportedContent)
+    }
+
+    private func showUnsupportedLanguageFeedback(_ text: String) {
+        showStatus(text)
+        learningHUDController.show(text)
+    }
+
+    private func fallbackLanguageCode(for mode: LanguageMode) -> String {
+        switch mode {
+        case .auto:
+            return "auto"
+        case .russian:
+            return "ru"
+        case .english:
+            return "en"
+        case .hebrew:
+            return "he"
+        }
     }
 
     private func triggerLearningFromSelection() {
@@ -1878,35 +2001,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func transcribeViaScriptFallback(samples: [Float], modelPath: String, languageMode: LanguageMode) async throws -> String {
+    private func transcribeViaScriptFallback(samples: [Float], modelPath: String, languageMode: LanguageMode) async throws -> FallbackTranscriptionResult {
         guard let scriptPath = transcribeScriptPath else {
             throw NSError(domain: "VoiceInput", code: 3101, userInfo: [NSLocalizedDescriptionKey: "Fallback script not found"])
         }
         guard !samples.isEmpty else {
-            return ""
+            return FallbackTranscriptionResult(text: "", languageCode: nil)
         }
 
         try FileManager.default.createDirectory(atPath: runtimeDirectoryPath, withIntermediateDirectories: true)
         let wavPath = recordingPath
         try writeSamplesAsWav(samples, to: wavPath)
 
-        let env: [String: String] = [
+        let baseEnv: [String: String] = [
             "WHISPER_MODEL": modelPath,
             "WHISPER_MODEL_DIR": modelsDirectoryPath,
             "WHISPER_APP_SUPPORT_DIR": appSupportDirectoryPath,
             "WHISPER_RUNTIME_DIR": runtimeDirectoryPath,
-            "WHISPER_LANGUAGE": languageMode.whisperLanguageCode ?? "auto",
             "WHISPER_THREADS": "\(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))",
             "WHISPER_BEAM_SIZE": "1",
             "WHISPER_BEST_OF": "1",
             "WHISPER_GPU_FALLBACK": "1"
         ]
-        let command = "\(shellQuote(scriptPath)) transcribe \(shellQuote(wavPath))"
+        var command = "\(shellQuote(scriptPath)) transcribe \(shellQuote(wavPath))"
+        if let bundledWhisperBinaryPath {
+            command = "WHISPER_BIN=\(shellQuote(bundledWhisperBinaryPath)) \(command)"
+        }
+        var env = baseEnv
+        let languageCode = fallbackLanguageCode(for: languageMode)
+        env["WHISPER_LANGUAGE"] = languageCode
         let (code, output) = await runShellAsync(command: command, environment: env)
         if code != 0 {
             throw NSError(domain: "VoiceInput", code: 3102, userInfo: [NSLocalizedDescriptionKey: output.isEmpty ? "Fallback transcription failed" : output])
         }
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return FallbackTranscriptionResult(
+            text: output.trimmingCharacters(in: .whitespacesAndNewlines),
+            languageCode: languageMode == .auto ? nil : languageCode
+        )
     }
 
     private func writeSamplesAsWav(_ samples: [Float], to path: String) throws {
@@ -2161,9 +2292,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeModel = model
         saveTranscribeModel()
         updateTranscribeModelMenuState()
-        let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
-        Task {
-            try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+        if useNativeSpeechEngine {
+            let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
+            Task {
+                try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+            }
         }
         showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
     }

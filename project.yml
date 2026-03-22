@@ -41,12 +41,14 @@ targets:
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/Sources/CWhisper
           - /opt/homebrew/opt/whisper-cpp/include
-          - /opt/homebrew/opt/whisper-cpp/libexec/include
+          - /opt/homebrew/opt/ggml/include
         LIBRARY_SEARCH_PATHS:
           - /opt/homebrew/opt/whisper-cpp/lib
+          - /opt/homebrew/opt/ggml/lib
         LD_RUNPATH_SEARCH_PATHS:
           - $(inherited)
           - /opt/homebrew/opt/whisper-cpp/lib
+          - /opt/homebrew/opt/ggml/lib
         OTHER_LDFLAGS:
           - $(inherited)
           - -lwhisper

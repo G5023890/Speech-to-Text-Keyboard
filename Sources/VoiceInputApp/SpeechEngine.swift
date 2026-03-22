@@ -158,8 +158,11 @@ actor SpeechEngine {
         unloadContext()
 
         var cparams = whisper_context_default_params()
-        cparams.use_gpu = true
-        cparams.flash_attn = true
+        // Homebrew whisper-cpp + ggml currently trips a backend assert on some
+        // beta macOS builds during device initialization. Keep CPU path as the
+        // stable baseline so the app can launch and transcribe reliably.
+        cparams.use_gpu = false
+        cparams.flash_attn = false
         cparams.gpu_device = 0
 
         guard let ctx = whisper_init_from_file_with_params(modelPath, cparams) else {

@@ -22,17 +22,22 @@ let package = Package(
                     "-Xcc",
                     "-I/opt/homebrew/opt/whisper-cpp/include",
                     "-Xcc",
-                    "-I/opt/homebrew/opt/whisper-cpp/libexec/include"
+                    "-I/opt/homebrew/opt/ggml/include"
                 ])
             ],
             linkerSettings: [
                 .unsafeFlags([
                     "-L/opt/homebrew/opt/whisper-cpp/lib",
+                    "-L/opt/homebrew/opt/ggml/lib",
                     "-lwhisper",
                     "-Xlinker",
                     "-rpath",
                     "-Xlinker",
-                    "/opt/homebrew/opt/whisper-cpp/lib"
+                    "/opt/homebrew/opt/whisper-cpp/lib",
+                    "-Xlinker",
+                    "-rpath",
+                    "-Xlinker",
+                    "/opt/homebrew/opt/ggml/lib"
                 ])
             ]
         )

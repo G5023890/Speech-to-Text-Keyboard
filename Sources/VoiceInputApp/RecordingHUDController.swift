@@ -83,6 +83,13 @@ private struct FloatingParticle: Identifiable {
     let weight: Font.Weight
 }
 
+private struct NotchGlow: Equatable {
+    let centerX: CGFloat
+    let centerY: CGFloat
+    let coreRadius: CGFloat
+    let haloRadius: CGFloat
+}
+
 @MainActor
 private final class NotchAnimationViewModel: ObservableObject {
     @Published var particles: [FloatingParticle] = []
@@ -101,7 +108,7 @@ private final class NotchAnimationViewModel: ObservableObject {
         stopTimers()
         spawnParticles()
 
-        spawnTimer = Timer.scheduledTimer(withTimeInterval: 0.24, repeats: true) { [weak self] _ in
+        spawnTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.spawnParticles()
             }
@@ -129,28 +136,29 @@ private final class NotchAnimationViewModel: ObservableObject {
     private func spawnParticles() {
         guard let metrics else { return }
         particles.append(makeParticle(side: .screenLeft, metrics: metrics))
+        particles.append(makeParticle(side: .screenLeft, metrics: metrics))
         particles.append(makeParticle(side: .screenRight, metrics: metrics))
-        if particles.count > 36 {
-            particles.removeFirst(particles.count - 36)
+        particles.append(makeParticle(side: .screenRight, metrics: metrics))
+        if particles.count > 48 {
+            particles.removeFirst(particles.count - 48)
         }
     }
 
     private func makeParticle(side: FloatingParticle.Side, metrics: NotchHUDMetrics) -> FloatingParticle {
         let bandHeight = metrics.bandHeight
-        let verticalPadding = max(4, floor((bandHeight - 10) / 5))
+        let verticalPadding = max(3, floor((bandHeight - 10) / 6))
         let minY = verticalPadding
         let maxY = max(minY + 1, bandHeight - verticalPadding - 1)
         let startY = CGFloat.random(in: minY...maxY)
-        let endY = CGFloat.random(in: minY...maxY)
-        let duration = Double.random(in: 0.74...1.04)
+        let duration = Double.random(in: 0.64...0.94)
         let notchMinX = metrics.notchRect.minX
         let notchMaxX = metrics.notchRect.maxX
-        let sideTravel = max(36, min(72, min(metrics.leftAuxiliaryRect.width, metrics.rightAuxiliaryRect.width) * 0.16))
-        let leftTravel = max(sideTravel + 42, min(142, metrics.leftAuxiliaryRect.width * 0.42))
+        let sideTravel = max(42, min(88, min(metrics.leftAuxiliaryRect.width, metrics.rightAuxiliaryRect.width) * 0.2))
+        let leftTravel = max(sideTravel + 56, min(168, metrics.leftAuxiliaryRect.width * 0.52))
         let leftStart = max(metrics.leftAuxiliaryRect.minX + 4, notchMinX - leftTravel)
         let leftEnd = notchMinX - 6
         let rightStart = notchMaxX + 6
-        let rightEnd = min(metrics.rightAuxiliaryRect.maxX - 8, notchMaxX + sideTravel)
+        let rightEnd = min(metrics.rightAuxiliaryRect.maxX - 6, notchMaxX + sideTravel + 20)
 
         if side == .screenLeft {
             return FloatingParticle(
@@ -159,13 +167,13 @@ private final class NotchAnimationViewModel: ObservableObject {
                 startX: leftStart,
                 endX: leftEnd,
                 startY: startY,
-                endY: endY,
-                controlX: notchMinX - CGFloat.random(in: 30...54),
+                endY: CGFloat.random(in: minY...maxY),
+                controlX: notchMinX - CGFloat.random(in: 34...62),
                 controlY: CGFloat.random(in: minY...maxY),
                 duration: duration,
-                color: Color(red: 0.72, green: 0.96, blue: 1.0),
-                glowColor: Color(red: 0.44, green: 0.84, blue: 1.0),
-                fontSize: min(14.5, max(10.5, bandHeight - 11)),
+                color: Color(red: 0.78, green: 0.98, blue: 1.0),
+                glowColor: Color(red: 0.50, green: 0.88, blue: 1.0),
+                fontSize: min(15.5, max(11, bandHeight - 10)),
                 weight: .heavy
             )
         }
@@ -177,17 +185,17 @@ private final class NotchAnimationViewModel: ObservableObject {
             startX: rightStart,
             endX: rightEnd,
             startY: startY,
-            endY: endY,
-            controlX: notchMaxX + CGFloat.random(in: 18...32),
+            endY: CGFloat.random(in: minY...maxY),
+            controlX: notchMaxX + CGFloat.random(in: 24...42),
             controlY: CGFloat.random(in: minY...maxY),
             duration: duration,
             color: emitsCode
-                ? Color(red: 0.76, green: 1.0, blue: 0.88)
-                : Color(red: 1.0, green: 0.96, blue: 0.66),
+                ? Color(red: 0.80, green: 1.0, blue: 0.90)
+                : Color(red: 1.0, green: 0.98, blue: 0.72),
             glowColor: emitsCode
-                ? Color(red: 0.38, green: 1.0, blue: 0.78)
-                : Color(red: 1.0, green: 0.86, blue: 0.36),
-            fontSize: min(10, max(7.5, bandHeight - 17)),
+                ? Color(red: 0.44, green: 1.0, blue: 0.82)
+                : Color(red: 1.0, green: 0.90, blue: 0.40),
+            fontSize: min(10.5, max(7.5, bandHeight - 16)),
             weight: emitsCode ? .bold : .heavy
         )
     }
@@ -231,9 +239,9 @@ private struct ParticleView: View {
             .font(.system(size: particle.fontSize, weight: particle.weight, design: .monospaced))
             .foregroundStyle(particle.color.opacity(alpha))
             .shadow(color: .black.opacity(alpha * 0.55), radius: 1.5, x: 0, y: 1)
-            .shadow(color: particle.glowColor.opacity(alpha), radius: 8)
-            .shadow(color: particle.glowColor.opacity(alpha * 0.85), radius: 18)
-            .shadow(color: particle.color.opacity(alpha * 0.45), radius: 28)
+            .shadow(color: particle.glowColor.opacity(alpha), radius: 10)
+            .shadow(color: particle.glowColor.opacity(alpha * 0.9), radius: 20)
+            .shadow(color: particle.color.opacity(alpha * 0.5), radius: 30)
             .position(x: x, y: y)
     }
 
@@ -312,12 +320,86 @@ private struct NotchView: View {
     }
 }
 
+private struct NotchGlowView: View {
+    let glow: NotchGlow
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.62, green: 0.90, blue: 1.0).opacity(0.34),
+                            Color(red: 0.38, green: 0.68, blue: 1.0).opacity(0.20),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: glow.haloRadius
+                    )
+                )
+                .frame(width: glow.haloRadius * 2, height: glow.haloRadius * 2)
+                .blur(radius: 8)
+
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color.white.opacity(0.24),
+                            Color(red: 0.84, green: 0.96, blue: 1.0).opacity(0.44),
+                            Color(red: 0.56, green: 0.84, blue: 1.0).opacity(0.24),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: glow.coreRadius
+                    )
+                )
+                .frame(width: glow.coreRadius * 2, height: glow.coreRadius * 2)
+                .shadow(color: Color.white.opacity(0.18), radius: 6)
+
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color.white.opacity(0.34),
+                            Color(red: 0.78, green: 0.94, blue: 1.0).opacity(0.36),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: glow.coreRadius * 0.62
+                    )
+                )
+                .frame(width: glow.coreRadius * 1.26, height: glow.coreRadius * 1.26)
+                .blur(radius: 2.5)
+
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color.white.opacity(0.42),
+                            Color(red: 0.84, green: 0.98, blue: 1.0).opacity(0.28),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: glow.coreRadius * 0.32
+                    )
+                )
+                .frame(width: glow.coreRadius * 0.72, height: glow.coreRadius * 0.72)
+                .blur(radius: 1.4)
+        }
+        .position(x: glow.centerX, y: glow.centerY)
+    }
+}
+
 private struct BeamLines: View {
     let metrics: NotchHUDMetrics
 
     var body: some View {
-        let horizontalSpan = max(58, min(126, min(metrics.leftAuxiliaryRect.width, metrics.rightAuxiliaryRect.width) * 0.24))
-        let leftSpan = max(horizontalSpan + 44, min(176, metrics.leftAuxiliaryRect.width * 0.48))
+        let horizontalSpan = max(72, min(150, min(metrics.leftAuxiliaryRect.width, metrics.rightAuxiliaryRect.width) * 0.3))
+        let leftSpan = max(horizontalSpan + 52, min(188, metrics.leftAuxiliaryRect.width * 0.54))
         let leftStart = max(metrics.leftAuxiliaryRect.minX, metrics.notchRect.minX - leftSpan)
         let leftEnd = metrics.notchRect.minX
         let rightStart = metrics.notchRect.maxX
@@ -334,14 +416,14 @@ private struct BeamLines: View {
                     leftAura,
                     with: .linearGradient(
                         Gradient(colors: [
-                            Color(red: 0.52, green: 0.90, blue: 1.0).opacity(0.08),
-                            Color(red: 0.52, green: 0.90, blue: 1.0).opacity(0.26),
-                            Color.white.opacity(0.22)
+                            Color(red: 0.52, green: 0.90, blue: 1.0).opacity(0.10),
+                            Color(red: 0.52, green: 0.90, blue: 1.0).opacity(0.34),
+                            Color.white.opacity(0.28)
                         ]),
                         startPoint: CGPoint(x: leftStart + 6, y: midY),
                         endPoint: CGPoint(x: leftEnd - 1, y: midY)
                     ),
-                    style: StrokeStyle(lineWidth: 6.8, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 7.4, lineCap: .round)
                 )
 
                 var leftPath = Path()
@@ -351,14 +433,14 @@ private struct BeamLines: View {
                     leftPath,
                     with: .linearGradient(
                         Gradient(colors: [
-                            Color(red: 0.46, green: 0.86, blue: 1.0).opacity(0.10),
-                            Color(red: 0.64, green: 0.94, blue: 1.0).opacity(0.98),
-                            Color.white.opacity(0.56)
+                            Color(red: 0.46, green: 0.86, blue: 1.0).opacity(0.14),
+                            Color(red: 0.72, green: 0.96, blue: 1.0).opacity(0.98),
+                            Color.white.opacity(0.64)
                         ]),
                         startPoint: CGPoint(x: leftStart + 8, y: midY),
                         endPoint: CGPoint(x: leftEnd - 2, y: midY)
                     ),
-                    lineWidth: 2.1
+                    lineWidth: 2.4
                 )
             }
 
@@ -370,14 +452,14 @@ private struct BeamLines: View {
                     rightAura,
                     with: .linearGradient(
                         Gradient(colors: [
-                            Color.white.opacity(0.22),
-                            Color(red: 0.56, green: 1.0, blue: 0.80).opacity(0.28),
-                            Color(red: 0.56, green: 1.0, blue: 0.80).opacity(0.08)
+                            Color.white.opacity(0.26),
+                            Color(red: 0.56, green: 1.0, blue: 0.80).opacity(0.34),
+                            Color(red: 0.56, green: 1.0, blue: 0.80).opacity(0.10)
                         ]),
                         startPoint: CGPoint(x: rightStart + 1, y: midY),
                         endPoint: CGPoint(x: rightEnd - 6, y: midY)
                     ),
-                    style: StrokeStyle(lineWidth: 6.8, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 7.4, lineCap: .round)
                 )
 
                 var rightPath = Path()
@@ -387,14 +469,14 @@ private struct BeamLines: View {
                     rightPath,
                     with: .linearGradient(
                         Gradient(colors: [
-                            Color.white.opacity(0.46),
-                            Color(red: 0.72, green: 1.0, blue: 0.84).opacity(0.98),
-                            Color(red: 0.62, green: 1.0, blue: 0.76).opacity(0.08)
+                            Color.white.opacity(0.52),
+                            Color(red: 0.76, green: 1.0, blue: 0.86).opacity(0.98),
+                            Color(red: 0.62, green: 1.0, blue: 0.76).opacity(0.10)
                         ]),
                         startPoint: CGPoint(x: rightStart + 2, y: midY),
                         endPoint: CGPoint(x: rightEnd - 8, y: midY)
                     ),
-                    lineWidth: 2.1
+                    lineWidth: 2.4
                 )
             }
 
@@ -404,8 +486,8 @@ private struct BeamLines: View {
                 leftGlow.addLine(to: CGPoint(x: leftEnd - 1, y: midY))
                 context.stroke(
                     leftGlow,
-                    with: .color(Color(red: 0.66, green: 0.94, blue: 1.0).opacity(0.85)),
-                    style: StrokeStyle(lineWidth: 5.2, lineCap: .round)
+                    with: .color(Color(red: 0.72, green: 0.96, blue: 1.0).opacity(0.92)),
+                    style: StrokeStyle(lineWidth: 5.8, lineCap: .round)
                 )
             }
 
@@ -415,8 +497,8 @@ private struct BeamLines: View {
                 rightGlow.addLine(to: CGPoint(x: rightStart + 18, y: midY))
                 context.stroke(
                     rightGlow,
-                    with: .color(Color(red: 0.72, green: 1.0, blue: 0.84).opacity(0.85)),
-                    style: StrokeStyle(lineWidth: 5.2, lineCap: .round)
+                    with: .color(Color(red: 0.78, green: 1.0, blue: 0.88).opacity(0.92)),
+                    style: StrokeStyle(lineWidth: 5.8, lineCap: .round)
                 )
             }
         }
@@ -427,10 +509,21 @@ private struct RecordingHUDView: View {
     @ObservedObject var state: RecordingHUDState
     @StateObject private var animationViewModel = NotchAnimationViewModel()
 
+    private var notchGlow: NotchGlow {
+        NotchGlow(
+            centerX: state.metrics.notchRect.midX,
+            centerY: state.metrics.bandHeight / 2,
+            coreRadius: min(64, state.metrics.notchRect.width * 0.44),
+            haloRadius: min(140, state.metrics.notchRect.width * 0.95)
+        )
+    }
+
     var body: some View {
         Group {
             if state.isVisible {
                 ZStack {
+                    NotchGlowView(glow: notchGlow)
+
                     BeamLines(metrics: state.metrics)
 
                     ForEach(animationViewModel.particles) { particle in
