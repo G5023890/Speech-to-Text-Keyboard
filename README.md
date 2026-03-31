@@ -2,7 +2,7 @@
 
 Release: `0.0.1`
 
-Local push-to-talk speech-to-text for macOS with a lightweight background app and configurable menu bar behavior.
+Push-to-talk dictation for macOS with a lightweight background app and menu bar controls.
 
 ## Features
 
@@ -10,7 +10,7 @@ Local push-to-talk speech-to-text for macOS with a lightweight background app an
 - Release to transcribe locally with `whisper.cpp`
 - Automatically paste text into the active app
 - Choose the active transcription model
-- Use fixed language profiles for Russian/English and Hebrew
+- Fixed language profiles: Russian/English and Hebrew
 - Toggle whether the app is shown in the menu bar
 - Open Settings automatically when the menu bar icon is disabled
 
@@ -77,8 +77,8 @@ The app provides a Settings window with:
 
 - Launch at login
 - Show in menu bar
-- Fixed hotkey profiles
-- Fixed language profiles
+- Fixed hotkey profiles: `Shift+Fn`, `Shift+Control+Fn`
+- Fixed language profiles: `RU/EN`, `עברית`
 - Model selection and model management
 - Quality mode
 - Recording time limit
@@ -131,11 +131,11 @@ If you want explicit single-language mode, set `WHISPER_LANGUAGE=ru`.
 
 ## Snapshot
 
-Current snapshot:
+Release notes for `0.0.1`:
 
-- release: `0.0.1`
-- fixed language flow: `RU/EN` and `עברית`
-- user corrections are filtered for known bad pairs like `мне -> не`
+- fixed hotkey profiles for `RU/EN` and `עברית`
+- stronger language locking in transcription and post-processing
+- user corrections ignore known bad pairs like `мне -> не`
 
 ## Term Glossary
 
