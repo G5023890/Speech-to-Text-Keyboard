@@ -1,6 +1,6 @@
 # Voice Input
 
-Release: `1.6.1`
+Release: `0.0.1`
 
 Local push-to-talk speech-to-text for macOS with a lightweight background app and configurable menu bar behavior.
 
@@ -10,7 +10,7 @@ Local push-to-talk speech-to-text for macOS with a lightweight background app an
 - Release to transcribe locally with `whisper.cpp`
 - Automatically paste text into the active app
 - Choose the active transcription model
-- Configure language mode
+- Use fixed language profiles for Russian/English and Hebrew
 - Toggle whether the app is shown in the menu bar
 - Open Settings automatically when the menu bar icon is disabled
 
@@ -77,8 +77,8 @@ The app provides a Settings window with:
 
 - Launch at login
 - Show in menu bar
-- Hotkey selection
-- Language mode
+- Fixed hotkey profiles
+- Fixed language profiles
 - Model selection and model management
 - Quality mode
 - Recording time limit
@@ -100,28 +100,25 @@ If **Show in menu bar** is disabled:
 
 ## Hotkey
 
-Supported hotkey modes:
+Supported fixed hotkey modes:
 
-- `Shift+Option`
-- `Shift+Control`
-- `Shift+Command`
 - `Shift+Fn`
-- `Fn`
+- `Shift+Control+Fn`
 
 Menu bar workflow:
 
-- choose hotkey in `Voice Input -> Hotkey`
+- hotkeys are fixed in the app
 - choose transcription model in `Voice Input -> Модель`
 - available menu bar model options include `medium-q5_0`, `small-q5_1`, and `large-v3-turbo-q5_0`
 
 ## Language Settings
 
-Defaults in `scripts/ptt_whisper.sh`:
+Fixed language profiles:
 
-- `WHISPER_LANGUAGE=auto`
-- prompt hint for Russian/English/Hebrew switching
+- `Shift+Fn` -> Russian/English
+- `Shift+Control+Fn` -> Hebrew
 
-Optional override:
+The app uses profile-specific prompts and post-processing so the output stays inside the selected language family.
 
 ```bash
 WHISPER_MODEL="/path/to/ggml-small.bin" \
@@ -131,6 +128,14 @@ WHISPER_PROMPT="The speaker may switch between Russian, English, and Hebrew."
 
 Set these in your shell profile before launching `Voice Input.app`, or edit defaults in `scripts/ptt_whisper.sh`.
 If you want explicit single-language mode, set `WHISPER_LANGUAGE=ru`.
+
+## Snapshot
+
+Current snapshot:
+
+- release: `0.0.1`
+- fixed language flow: `RU/EN` and `עברית`
+- user corrections are filtered for known bad pairs like `мне -> не`
 
 ## Term Glossary
 
