@@ -25,6 +25,10 @@ final class CorrectionEngine {
 
     private let storageURL: URL
     private var entriesBySource: [String: Entry] = [:]
+    private let protectedSingleWordPairs: Set<String> = [
+        "мне→не",
+        "не→мне"
+    ]
 
     init(storageURL: URL) {
         self.storageURL = storageURL
@@ -48,6 +52,9 @@ final class CorrectionEngine {
         }
 
         for entry in entries {
+            guard !isProtectedMapping(from: entry.from, to: entry.to) else {
+                continue
+            }
             result = replacePhrase(entry.from, with: entry.to, in: result)
         }
         return normalizeWhitespace(result)
@@ -183,6 +190,7 @@ final class CorrectionEngine {
     private func isValidMapping(from: String, to: String) -> Bool {
         guard !from.isEmpty, !to.isEmpty else { return false }
         guard from != to.lowercased() else { return false }
+        guard !isProtectedMapping(from: from, to: to) else { return false }
 
         let fromWords = from.split(separator: " ").count
         let toWords = to.split(separator: " ").count
@@ -232,10 +240,21 @@ final class CorrectionEngine {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let payload = try decoder.decode(Payload.self, from: data)
-            entriesBySource = Dictionary(uniqueKeysWithValues: payload.entries.map { ($0.from, $0) })
+            let filteredEntries = payload.entries.filter { !isProtectedMapping(from: $0.from, to: $0.to) }
+            entriesBySource = Dictionary(uniqueKeysWithValues: filteredEntries.map { ($0.from, $0) })
+            if filteredEntries.count != payload.entries.count {
+                save()
+            }
         } catch {
             entriesBySource = [:]
         }
+    }
+
+    private func isProtectedMapping(from: String, to: String) -> Bool {
+        let normalizedFrom = normalizeWhitespace(from).lowercased()
+        let normalizedTo = normalizeWhitespace(to).lowercased()
+        let key = "\(normalizedFrom)→\(normalizedTo)"
+        return protectedSingleWordPairs.contains(key)
     }
 
     private func save() {

@@ -8,40 +8,44 @@ import SwiftUI
 import WidgetKit
 
 enum HotkeyMode: String, CaseIterable {
-    case shiftOption
-    case shiftControl
-    case shiftCommand
-    case shiftFn
-    case fn
+    case ruEnShiftFn
+    case hebrewShiftControlFn
 
     var title: String {
         switch self {
-        case .shiftOption:
-            return "Shift+Option"
-        case .shiftControl:
-            return "Shift+Control"
-        case .shiftCommand:
-            return "Shift+Command"
-        case .shiftFn:
-            return "Shift+Fn"
-        case .fn:
-            return "Fn"
+        case .ruEnShiftFn:
+            return "Shift+Fn — RU/EN"
+        case .hebrewShiftControlFn:
+            return "Shift+Control+Fn — עברית"
+        }
+    }
+
+    var languageMode: LanguageMode {
+        switch self {
+        case .ruEnShiftFn:
+            return .russianEnglish
+        case .hebrewShiftControlFn:
+            return .hebrew
         }
     }
 
     func isPressed(flags: NSEvent.ModifierFlags) -> Bool {
         switch self {
-        case .shiftOption:
-            return flags.contains(.shift) && flags.contains(.option)
-        case .shiftControl:
-            return flags.contains(.shift) && flags.contains(.control)
-        case .shiftCommand:
-            return flags.contains(.shift) && flags.contains(.command)
-        case .shiftFn:
-            return flags.contains(.shift) && flags.contains(.function)
-        case .fn:
-            return flags.contains(.function)
+        case .ruEnShiftFn:
+            return flags.contains(.shift) && flags.contains(.function) && !flags.contains(.control)
+        case .hebrewShiftControlFn:
+            return flags.contains(.shift) && flags.contains(.control) && flags.contains(.function)
         }
+    }
+
+    static func activeProfile(for flags: NSEvent.ModifierFlags) -> HotkeyMode? {
+        if HotkeyMode.hebrewShiftControlFn.isPressed(flags: flags) {
+            return .hebrewShiftControlFn
+        }
+        if HotkeyMode.ruEnShiftFn.isPressed(flags: flags) {
+            return .ruEnShiftFn
+        }
+        return nil
     }
 }
 
@@ -218,14 +222,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statsTotalItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var settingsViewModel: SettingsViewModel?
-    private let hotkeyDefaultsKey = "voice_input_hotkey_mode"
     private let transcribeModelDefaultsKey = "voice_input_transcribe_model"
-    private let languageModeDefaultsKey = "voice_input_language_mode"
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
     private let maxRecordingSecondsDefaultsKey = "voice_input_max_recording_seconds"
-    private var hotkeyMode: HotkeyMode = .shiftOption
+    private var currentRecordingHotkeyMode: HotkeyMode?
     private var transcribeModel: TranscribeModel = .smallQ8
-    private var languageMode: LanguageMode = .auto
     private var modelUpdateInProgress = false
     private var updateCheckInProgress = false
     private var modelUpdateAvailable = false
@@ -260,10 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         ensureModelsDirectoryReady()
         loadUsageStats()
-        loadHotkeyMode()
         loadTranscribeModel()
         reconcileSelectedModel()
-        loadLanguageMode()
         _ = correctionEngine
         installOpenURLHandler()
         updateStatusItemVisibility()
@@ -278,7 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await SpeechEngine.shared.warmup(modelPath: modelPath)
             }
         }
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
+        showStatus("PTT ready: Shift+Fn / Shift+Control+Fn, model: \(transcribeModel.title)")
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -521,10 +520,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launchAtLoginItem = launchItem
 
         for mode in HotkeyMode.allCases {
-            let item = NSMenuItem(title: mode.title, action: #selector(selectHotkey(_:)), keyEquivalent: "")
-            item.target = self
+            let item = NSMenuItem(title: mode.title, action: nil, keyEquivalent: "")
             item.representedObject = mode.rawValue
-            item.isEnabled = true
+            item.isEnabled = false
             hotkeyMenuItems[mode] = item
         }
 
@@ -732,9 +730,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return SettingsSnapshot(
             launchAtLoginEnabled: isLaunchAtLoginEnabled(),
             showsMenuBarIcon: showsMenuBarIcon(),
-            selectedHotkey: hotkeyMode.rawValue,
+            selectedHotkey: "fixed",
             selectedModelID: transcribeModel.rawValue,
-            selectedLanguageMode: languageMode.rawValue,
+            selectedLanguageMode: "fixed",
             installedModelCount: installedModelsCount(),
             totalModelCount: managedModels.count,
             updatesAvailable: modelUpdateAvailable,
@@ -956,13 +954,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         handleDoubleControlLearningHotkey(flags: flags)
 
-        let hotkeyHeld = hotkeyMode.isPressed(flags: flags)
-        if hotkeyHeld && !isRecording {
-            startRecording()
+        let hotkeyHeld = HotkeyMode.activeProfile(for: flags)
+        if let hotkeyHeld, !isRecording {
+            startRecording(using: hotkeyHeld)
             return
         }
-        if !hotkeyHeld && isRecording {
+        if isRecording {
+            guard let currentRecordingHotkeyMode else {
+                stopRecordingAndPaste()
+                return
+            }
+            if let hotkeyHeld, hotkeyHeld == currentRecordingHotkeyMode {
+                return
+            }
             stopRecordingAndPaste()
+            if let hotkeyHeld {
+                startRecording(using: hotkeyHeld)
+            }
         }
     }
 
@@ -984,15 +992,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func loadHotkeyMode() {
-        let saved = UserDefaults.standard.string(forKey: hotkeyDefaultsKey) ?? HotkeyMode.shiftOption.rawValue
-        hotkeyMode = HotkeyMode(rawValue: saved) ?? .shiftOption
-    }
-
-    private func saveHotkeyMode() {
-        UserDefaults.standard.set(hotkeyMode.rawValue, forKey: hotkeyDefaultsKey)
-    }
-
     private func loadTranscribeModel() {
         let saved = UserDefaults.standard.string(forKey: transcribeModelDefaultsKey) ?? bundledBaselineModel.rawValue
         transcribeModel = TranscribeModel.fromPersisted(saved) ?? bundledBaselineModel
@@ -1000,15 +999,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func saveTranscribeModel() {
         UserDefaults.standard.set(transcribeModel.rawValue, forKey: transcribeModelDefaultsKey)
-    }
-
-    private func loadLanguageMode() {
-        let saved = UserDefaults.standard.string(forKey: languageModeDefaultsKey) ?? LanguageMode.auto.rawValue
-        languageMode = LanguageMode(rawValue: saved) ?? .auto
-    }
-
-    private func saveLanguageMode() {
-        UserDefaults.standard.set(languageMode.rawValue, forKey: languageModeDefaultsKey)
     }
 
     private func loadUsageStats() {
@@ -1255,7 +1245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateHotkeyMenuState() {
         for (mode, item) in hotkeyMenuItems {
-            item.state = (mode == hotkeyMode) ? .on : .off
+            item.state = (mode == currentRecordingHotkeyMode) ? .on : .off
         }
         refreshSettingsWindow()
     }
@@ -1324,36 +1314,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startRecording() {
+    private func startRecording(using mode: HotkeyMode) {
         ensureMicrophonePermission { [weak self] granted in
             guard let self else { return }
             guard granted else {
                 self.showStatus("Microphone permission denied")
                 return
             }
-            self.beginNativeRecording()
+            self.beginNativeRecording(using: mode)
         }
     }
 
-    private func beginNativeRecording() {
+    private func beginNativeRecording(using mode: HotkeyMode) {
         if isRecording {
             return
         }
-        appendRuntimeDiagnostic("ptt_begin_requested model=\(transcribeModel.fileName) lang=\(languageMode.rawValue)")
+        currentRecordingHotkeyMode = mode
+        appendRuntimeDiagnostic("ptt_begin_requested model=\(transcribeModel.fileName) hotkey=\(mode.rawValue) lang=\(mode.languageMode.rawValue)")
         isRecording = true
         recordingStartedAt = Date()
         lastPartialDraft = ""
         partialInferenceInFlight = false
         hudController.show()
-        showStatus("Recording...")
+        showStatus("Recording... \(mode.title)")
         do {
             try audioManager.start()
             appendRuntimeDiagnostic("audio_engine_started")
-            startPartialLoop()
+            startPartialLoop(using: mode)
         } catch {
             appendRuntimeDiagnostic("audio_engine_start_failed error=\(error.localizedDescription)")
             hudController.hide(immediately: true)
             isRecording = false
+            currentRecordingHotkeyMode = nil
             recordingStartedAt = nil
             showStatus("Audio engine error")
         }
@@ -1363,6 +1355,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !isRecording {
             return
         }
+        let recordingMode = currentRecordingHotkeyMode ?? .ruEnShiftFn
+        currentRecordingHotkeyMode = nil
         appendRuntimeDiagnostic("ptt_stop_requested")
         isRecording = false
         hudController.hide()
@@ -1404,14 +1398,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 self.appendRuntimeDiagnostic("final_decode_started model_path=\(modelPath)")
                 var finalText = ""
-                var finalLanguage = self.languageMode.whisperLanguageCode
+                var finalLanguage = recordingMode.languageMode.whisperLanguageCode
                 var finalConfidence: Float = 0.55
 
                 if self.useNativeSpeechEngine {
                     let output = try await SpeechEngine.shared.transcribe(
                         samples: finalSamples,
                         modelPath: modelPath,
-                        languageMode: self.languageMode,
+                        languageMode: recordingMode.languageMode,
                         pass: .final
                     )
                     finalText = output.text
@@ -1425,14 +1419,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         let fallback = try await self.transcribeViaScriptFallback(
                             samples: finalSamples,
                             modelPath: modelPath,
-                            languageMode: self.languageMode
+                            languageMode: recordingMode.languageMode
                         )
                         let fallbackText = fallback.text
                         let fallbackTrimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
                         self.appendRuntimeDiagnostic("cli_fallback_done text_len=\(fallbackTrimmed.count)")
                         if !fallbackTrimmed.isEmpty {
                             finalText = fallbackTrimmed
-                            finalLanguage = fallback.languageCode ?? self.languageMode.whisperLanguageCode ?? finalLanguage
+                            finalLanguage = fallback.languageCode ?? recordingMode.languageMode.whisperLanguageCode ?? finalLanguage
                             finalConfidence = max(0.55, finalConfidence)
                         }
                     } catch {
@@ -1448,7 +1442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         text: finalizedText,
                         duration: sessionDuration,
                         detectedLanguageCode: finalizedLanguage,
-                        confidence: finalizedConfidence
+                        confidence: finalizedConfidence,
+                        recordingMode: recordingMode
                     )
                 }
             } catch {
@@ -1469,6 +1464,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startPartialLoop() {
+        guard let recordingMode = currentRecordingHotkeyMode else {
+            partialLoopTask?.cancel()
+            partialLoopTask = nil
+            return
+        }
+        startPartialLoop(using: recordingMode)
+    }
+
+    private func startPartialLoop(using mode: HotkeyMode) {
         guard useNativeSpeechEngine else {
             partialLoopTask?.cancel()
             partialLoopTask = nil
@@ -1494,7 +1498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let output = try await SpeechEngine.shared.transcribe(
                         samples: samples,
                         modelPath: modelPath,
-                        languageMode: self.languageMode,
+                        languageMode: mode.languageMode,
                         pass: .partial
                     )
                     await MainActor.run {
@@ -1524,13 +1528,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let languageCode: String?
     }
 
-    private func handleFinalTranscription(text: String, duration: Double, detectedLanguageCode: String?, confidence: Float) {
+    private func handleFinalTranscription(
+        text: String,
+        duration: Double,
+        detectedLanguageCode: String?,
+        confidence: Float,
+        recordingMode: HotkeyMode
+    ) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let noTrailingDot = removeTrailingPeriod(trimmedText)
         let correctedText = correctionEngine.correct(noTrailingDot)
-        let sanitizedResult = sanitizeInsertionText(correctedText)
+        let grammarFixedText = normalizeCommonRussianConfusions(correctedText, for: recordingMode)
+        let sanitizedResult = sanitizeInsertionText(grammarFixedText, for: recordingMode)
         let finalText = sanitizedResult.text
-        appendRuntimeDiagnostic("handle_final text_len=\(finalText.count)")
+        appendRuntimeDiagnostic("handle_final mode=\(recordingMode.rawValue) text_len=\(finalText.count)")
         guard !finalText.isEmpty else {
             appendTranscriptionDiagnostic(
                 status: "rejected",
@@ -1595,12 +1606,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func sanitizeInsertionText(_ text: String) -> SanitizedInsertionResult {
+    private func normalizeCommonRussianConfusions(_ text: String, for profile: HotkeyMode) -> String {
+        switch profile {
+        case .ruEnShiftFn:
+            return normalizeRussianParticleConfusions(in: text)
+        case .hebrewShiftControlFn:
+            return text
+        }
+    }
+
+    private func normalizeRussianParticleConfusions(in text: String) -> String {
+        let keepMeWords: Set<String> = [
+            "не", "ни",
+            "надо", "нужно", "нельзя", "можно", "пора", "жаль", "кажется", "казалось",
+            "нравится", "хочется", "приятно", "интересно", "важно", "плохо", "хорошо",
+            "легко", "трудно", "сложно", "обидно", "стыдно", "страшно", "необходимо",
+            "слышно", "видно", "ясно", "понятно",
+            "буду", "будешь", "будет", "будем", "будете", "будут", "было", "была", "быть"
+        ]
+
+        guard let regex = try? NSRegularExpression(pattern: #"(?i)(?<![\p{L}\p{N}_])(мне)(?![\p{L}\p{N}_])"#) else {
+            return text
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else {
+            return text
+        }
+
+        let mutable = NSMutableString(string: text)
+        for match in matches.reversed() {
+            let wordRange = match.range(at: 1)
+            let nextWord = firstWord(after: wordRange.upperBound, in: nsText as String)
+            guard !keepMeWords.contains(nextWord.lowercased()) else {
+                continue
+            }
+            let replacement = preserveCase(of: nsText.substring(with: wordRange), with: "не")
+            mutable.replaceCharacters(in: wordRange, with: replacement)
+        }
+        return mutable as String
+    }
+
+    private func firstWord(after location: Int, in text: String) -> String {
+        let nsText = text as NSString
+        guard location < nsText.length else { return "" }
+        let suffix = nsText.substring(from: location)
+        guard let match = suffix.range(of: #"[A-Za-zА-Яа-яЁё]+"#, options: .regularExpression) else {
+            return ""
+        }
+        return String(suffix[match])
+    }
+
+    private func preserveCase(of source: String, with replacement: String) -> String {
+        guard let first = source.first else {
+            return replacement
+        }
+        return first.isUppercase ? replacement.capitalized : replacement
+    }
+
+    private func sanitizeInsertionText(_ text: String, for profile: HotkeyMode) -> SanitizedInsertionResult {
         let allowedPunctuation = CharacterSet(charactersIn: " \t\r\n.,!?;:'\"()[]{}<>«»„“”`~@#$%^&*-_=+/\\|0123456789")
         let latin = CharacterSet(charactersIn: "A"..."Z").union(CharacterSet(charactersIn: "a"..."z"))
         let cyrillic = CharacterSet(charactersIn: "\u{0400}"..."\u{04FF}")
         let hebrew = CharacterSet(charactersIn: "\u{0590}"..."\u{05FF}")
-        let allowed = allowedPunctuation.union(latin).union(cyrillic).union(hebrew)
+        let allowed: CharacterSet
+        switch profile {
+        case .ruEnShiftFn:
+            allowed = allowedPunctuation.union(latin).union(cyrillic)
+        case .hebrewShiftControlFn:
+            allowed = allowedPunctuation.union(hebrew)
+        }
 
         var removedUnsupportedContent = false
         let scalars = text.unicodeScalars.map { scalar -> UnicodeScalar in
@@ -1625,7 +1701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func fallbackLanguageCode(for mode: LanguageMode) -> String {
         switch mode {
-        case .auto:
+        case .auto, .russianEnglish:
             return "auto"
         case .russian:
             return "ru"
@@ -2029,14 +2105,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var env = baseEnv
         let languageCode = fallbackLanguageCode(for: languageMode)
+        let effectiveLanguageCode = languageMode == .hebrew ? "auto" : languageCode
         env["WHISPER_LANGUAGE"] = languageCode
+        if let prompt = languageMode.whisperInitialPrompt {
+            env["WHISPER_PROMPT"] = prompt
+        }
+        if languageMode == .hebrew {
+            env["WHISPER_LANGUAGE"] = "auto"
+            env["WHISPER_BEAM_SIZE"] = "5"
+            env["WHISPER_BEST_OF"] = "5"
+        }
         let (code, output) = await runShellAsync(command: command, environment: env)
         if code != 0 {
             throw NSError(domain: "VoiceInput", code: 3102, userInfo: [NSLocalizedDescriptionKey: output.isEmpty ? "Fallback transcription failed" : output])
         }
         return FallbackTranscriptionResult(
             text: output.trimmingCharacters(in: .whitespacesAndNewlines),
-            languageCode: languageMode == .auto ? nil : languageCode
+            languageCode: languageMode == .auto || languageMode == .russianEnglish ? nil : effectiveLanguageCode
         )
     }
 
@@ -2255,26 +2340,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return result
     }
 
-    @objc private func selectHotkey(_ sender: NSMenuItem) {
-        guard
-            let raw = sender.representedObject as? String,
-            HotkeyMode(rawValue: raw) != nil
-        else {
-            return
-        }
-        setHotkey(rawValue: raw)
-    }
-
-    private func setHotkey(rawValue: String) {
-        guard let mode = HotkeyMode(rawValue: rawValue) else {
-            return
-        }
-        hotkeyMode = mode
-        saveHotkeyMode()
-        updateHotkeyMenuState()
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
-    }
-
     @objc private func selectTranscribeModel(_ sender: NSMenuItem) {
         guard
             let raw = sender.representedObject as? String,
@@ -2298,17 +2363,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await SpeechEngine.shared.warmup(modelPath: modelPath)
             }
         }
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
+        showStatus("PTT ready: Shift+Fn / Shift+Control+Fn, model: \(transcribeModel.title)")
     }
 
-    private func setLanguageMode(rawValue: String) {
-        guard let mode = LanguageMode(rawValue: rawValue) else {
-            return
-        }
-        languageMode = mode
-        saveLanguageMode()
+    private func setHotkey(rawValue _: String) {
+        showStatus("Hotkeys are fixed: Shift+Fn / Shift+Control+Fn")
         refreshSettingsWindow()
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title), lang: \(mode.title)")
+    }
+
+    private func setLanguageMode(rawValue _: String) {
+        showStatus("Language profiles are fixed: RU/EN and Hebrew")
+        refreshSettingsWindow()
     }
 
     private func setShowsMenuBarIcon(_ enabled: Bool) {

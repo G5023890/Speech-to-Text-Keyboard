@@ -67,9 +67,9 @@ struct SettingsSnapshot: Equatable {
     static let mock = SettingsSnapshot(
         launchAtLoginEnabled: true,
         showsMenuBarIcon: true,
-        selectedHotkey: HotkeyMode.shiftOption.rawValue,
+        selectedHotkey: "fixed",
         selectedModelID: TranscribeModel.mediumQ5.rawValue,
-        selectedLanguageMode: LanguageMode.auto.rawValue,
+        selectedLanguageMode: "fixed",
         installedModelCount: 3,
         totalModelCount: 3,
         updatesAvailable: false,
@@ -201,9 +201,7 @@ struct SettingsView: View {
 
     @AppStorage("voice_input_launch_at_login") private var launchAtLogin = false
     @AppStorage("voice_input_show_menu_bar_icon") private var showsMenuBarIcon = true
-    @AppStorage("voice_input_hotkey_mode") private var hotkey = HotkeyMode.shiftOption.rawValue
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
-    @AppStorage("voice_input_language_mode") private var languageMode = LanguageMode.auto.rawValue
     @AppStorage("qualityMode") private var qualityMode = QualityMode.balanced.rawValue
     @AppStorage("voice_input_max_recording_seconds") private var maxRecordingSeconds = 20.0
 
@@ -285,19 +283,22 @@ struct SettingsView: View {
                         )
                     )
 
-                    SettingsPickerRow(
-                        title: "Горячая клавиша",
-                        selection: selectedHotkeyBinding,
-                        options: viewModel.hotkeyOptions,
-                        optionTitle: { $0.title }
-                    )
+                    SettingsRow("Горячие клавиши") {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("Shift+Fn → RU/EN")
+                                .font(VITypography.rowValue)
+                                .foregroundStyle(.secondary)
+                            Text("Shift+Control+Fn → עברית")
+                                .font(VITypography.rowValue)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
-                    SettingsPickerRow(
-                        title: "Язык",
-                        selection: selectedLanguageBinding,
-                        options: LanguageMode.allCases,
-                        optionTitle: { $0.title }
-                    )
+                    SettingsRow("Режимы") {
+                        Text("Фиксированные")
+                            .font(VITypography.rowValue)
+                            .foregroundStyle(.secondary)
+                    }
 
                     SettingsShortcutRow(
                         title: "Обучение правок",
@@ -381,26 +382,6 @@ struct SettingsView: View {
         return "\(count) моделей"
     }
 
-    private var selectedHotkeyBinding: Binding<HotkeyMode> {
-        Binding(
-            get: { HotkeyMode(rawValue: hotkey) ?? .shiftOption },
-            set: { newValue in
-                hotkey = newValue.rawValue
-                viewModel.applyHotkey(newValue.rawValue)
-            }
-        )
-    }
-
-    private var selectedLanguageBinding: Binding<LanguageMode> {
-        Binding(
-            get: { LanguageMode(rawValue: languageMode) ?? .auto },
-            set: { newValue in
-                languageMode = newValue.rawValue
-                viewModel.applyLanguageMode(newValue.rawValue)
-            }
-        )
-    }
-
     private var qualityModeBinding: Binding<QualityMode> {
         Binding(
             get: { QualityMode(rawValue: qualityMode) ?? .balanced },
@@ -424,8 +405,6 @@ struct SettingsView: View {
     private func syncStorageFromSnapshot() {
         launchAtLogin = viewModel.snapshot.launchAtLoginEnabled
         showsMenuBarIcon = viewModel.snapshot.showsMenuBarIcon
-        hotkey = viewModel.snapshot.selectedHotkey
         selectedModelID = viewModel.snapshot.selectedModelID
-        languageMode = viewModel.snapshot.selectedLanguageMode
     }
 }
