@@ -242,7 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastControlTapAt: Date?
     private let doubleControlInterval: TimeInterval = 0.42
     private let learningSourceMaxAge: TimeInterval = 900
-    private let useNativeSpeechEngine = false
+    private let useNativeSpeechEngine = true
+    private let allowShellFallback = false
     private let bundledBaselineModel: TranscribeModel = .smallQ8
     private lazy var correctionEngine: CorrectionEngine = {
         CorrectionEngine(storageURL: URL(fileURLWithPath: correctionsFilePath))
@@ -1411,9 +1412,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     finalText = output.text
                     finalLanguage = output.detectedLanguageCode
                     finalConfidence = output.confidence
+                    self.appendRuntimeDiagnostic("native_decode_done text_len=\(finalText.count) conf=\(String(format: "%.2f", finalConfidence)) lang=\(finalLanguage ?? "nil")")
                 }
 
-                if !self.useNativeSpeechEngine || finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if allowShellFallback && (!self.useNativeSpeechEngine || finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                     self.appendRuntimeDiagnostic("native_empty_try_cli_fallback")
                     do {
                         let fallback = try await self.transcribeViaScriptFallback(
@@ -1432,6 +1434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } catch {
                         self.appendRuntimeDiagnostic("cli_fallback_failed error=\(error.localizedDescription)")
                     }
+                } else if self.useNativeSpeechEngine, finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.appendRuntimeDiagnostic("native_empty_skip_cli_fallback")
                 }
                 let finalizedText = finalText
                 let finalizedLanguage = finalLanguage
