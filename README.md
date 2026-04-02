@@ -1,6 +1,6 @@
 # Voice Input
 
-Release: `0.0.1`
+Release: `0.0.2`
 
 Push-to-talk dictation for macOS with a lightweight background app and menu bar controls.
 
@@ -143,7 +143,7 @@ If you want explicit single-language mode, set `WHISPER_LANGUAGE=ru`.
 
 ## Snapshot
 
-Release notes for `0.0.1`:
+Release notes for `0.0.2`:
 
 - fixed hotkey profiles for `RU/EN` and `עברית`
 - stronger language locking in transcription and post-processing
@@ -154,7 +154,7 @@ Release notes for `0.0.1`:
 Current installer bundle:
 
 - `dist/Voice Input.dmg`
-- app version: `0.0.1`
+- app version: `0.0.2`
 - installer script: `scripts/create_dmg.sh`
 
 ## Term Glossary

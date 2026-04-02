@@ -193,6 +193,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let appSupportSubdir = "Voice Input"
+    private let fixedHotkeyDescription = "Shift+Fn / Shift+Control+Fn"
+    private let microphonePermissionDeniedStatusText = "Microphone permission denied"
+    private let noSpeechDetectedStatusText = "No speech detected"
+    private let sttErrorStatusText = "STT error"
+    private let audioEngineErrorStatusText = "Audio engine error"
+    private let modelUpdateFailedStatusText = "Model update failed"
+    private let modelUpdateStartingStatusText = "Updating models..."
+    private let modelUpdateCompletedStatusText = "Models updated"
+    private let launchAtLoginUnsupportedStatusText = "Launch at Login unsupported on this macOS"
+    private let launchAtLoginDisabledStatusText = "Launch at Login disabled"
+    private let launchAtLoginEnabledStatusText = "Launch at Login enabled"
+    private let launchAtLoginErrorStatusText = "Launch at Login error"
+    private let pasteBlockedStatusText = "Paste blocked, text copied"
+    private let pastedStatusText = "Pasted"
 
     private var statusItem: NSStatusItem?
     private var menuBarIconImage: NSImage?
@@ -278,7 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
         reloadControlCenterStatus()
-        showStatus("PTT ready: Shift+Fn / Shift+Control+Fn, model: \(transcribeModel.title)")
+        showStatus(readyStatusText)
     }
 
     private func configureGGMLBackendPath() {
@@ -337,20 +351,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    private var legacyLowercaseModelsDirectoryPath: String {
-        return "\(appSupportDirectoryPath)/models"
-    }
-
     private var downloadsDirectoryPath: String {
         return "\(appSupportDirectoryPath)/Downloads"
     }
 
     private var catalogDirectoryPath: String {
         return "\(appSupportDirectoryPath)/Catalog"
-    }
-
-    private var legacyModelsDirectoryPath: String {
-        return "\(NSHomeDirectory())/Documents/Develop/Voice input/models"
     }
 
     private var runtimeDirectoryPath: String {
@@ -400,29 +406,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(atPath: appSupportDirectoryPath, withIntermediateDirectories: true)
         try? fileManager.createDirectory(atPath: modelsDirectoryPath, withIntermediateDirectories: true)
-
-        if fileManager.fileExists(atPath: legacyLowercaseModelsDirectoryPath),
-           let files = try? fileManager.contentsOfDirectory(atPath: legacyLowercaseModelsDirectoryPath)
-        {
-            for file in files where file.hasSuffix(".bin") {
-                let oldPath = "\(legacyLowercaseModelsDirectoryPath)/\(file)"
-                let newPath = "\(modelsDirectoryPath)/\(file)"
-                if !fileManager.fileExists(atPath: newPath) {
-                    try? fileManager.copyItem(atPath: oldPath, toPath: newPath)
-                }
-            }
-        }
-
-        for model in legacyManagedModels {
-            let newPath = "\(modelsDirectoryPath)/\(model)"
-            if fileManager.fileExists(atPath: newPath) {
-                continue
-            }
-            let oldPath = "\(legacyModelsDirectoryPath)/\(model)"
-            if fileManager.fileExists(atPath: oldPath) {
-                try? fileManager.copyItem(atPath: oldPath, toPath: newPath)
-            }
-        }
 
         if let bundledModelsDirectoryPath,
            fileManager.fileExists(atPath: bundledModelsDirectoryPath),
@@ -1357,7 +1340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ensureMicrophonePermission { [weak self] granted in
             guard let self else { return }
             guard granted else {
-                self.showStatus("Microphone permission denied")
+                self.showStatus(self.microphonePermissionDeniedStatusText)
                 return
             }
             self.beginNativeRecording(using: mode)
@@ -1386,7 +1369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isRecording = false
             currentRecordingHotkeyMode = nil
             recordingStartedAt = nil
-            showStatus("Audio engine error")
+            showStatus(audioEngineErrorStatusText)
         }
     }
 
@@ -1413,7 +1396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: "",
                 reason: "too_short_before_transcribe"
             )
-            showStatus("No speech detected")
+            showStatus(noSpeechDetectedStatusText)
             clearTransientData(clearClipboard: false)
             return
         }
@@ -1427,7 +1410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: "",
                 reason: "empty_audio_after_vad"
             )
-            showStatus("No speech detected")
+            showStatus(noSpeechDetectedStatusText)
             clearTransientData(clearClipboard: false)
             return
         }
@@ -1511,7 +1494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         text: "",
                         reason: "stt_error_native"
                     )
-                    self.showStatus("STT error")
+                    self.showStatus(self.sttErrorStatusText)
                     self.showErrorAlert(title: "STT error", text: error.localizedDescription)
                     self.clearTransientData(clearClipboard: false)
                 }
@@ -1609,7 +1592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 appendRuntimeDiagnostic("unsupported_language_rejected")
                 showUnsupportedLanguageFeedback("Неподдерживаемый язык: вставка пропущена")
             } else {
-                showStatus("No speech detected")
+                showStatus(noSpeechDetectedStatusText)
             }
             clearTransientData(clearClipboard: false)
             return
@@ -1646,11 +1629,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 appendRuntimeDiagnostic("unsupported_language_trimmed")
                 showUnsupportedLanguageFeedback("Неподдерживаемые символы удалены")
             } else {
-                showStatus("Pasted")
+                showStatus(pastedStatusText)
             }
             clearTransientData(clearClipboard: true)
         } else {
-            showStatus("Paste blocked, text copied")
+            showStatus(pasteBlockedStatusText)
             clearTransientData(clearClipboard: false)
             showErrorAlert(title: "Auto-paste blocked", text: "Text is copied to clipboard. Grant Accessibility for Voice Input to allow auto-paste.")
         }
@@ -1923,6 +1906,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var readyStatusText: String {
+        "PTT ready: \(fixedHotkeyDescription), model: \(transcribeModel.title)"
+    }
+
+    private var fixedHotkeyStatusText: String {
+        "Hotkeys are fixed: \(fixedHotkeyDescription)"
+    }
+
+    private var fixedLanguageProfileStatusText: String {
+        "Language profiles are fixed: RU/EN and Hebrew"
+    }
+
     private func beginActivity() {
         activityCounter += 1
         updateMenuBarLoadingState()
@@ -1986,7 +1981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshSettingsWindow()
         beginActivity()
         setModelProgress(0, detail: "старт")
-        showStatus("Updating models...")
+        showStatus(modelUpdateStartingStatusText)
 
         guard let scriptPath = transcribeScriptPath else {
             modelUpdateInProgress = false
@@ -1994,7 +1989,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refreshSettingsWindow()
             clearModelProgress()
             endActivity()
-            showStatus("Model update failed")
+            showStatus(modelUpdateFailedStatusText)
             showErrorAlert(title: "Model update failed", text: "Update script not found.")
             completion?(self.currentSettingsSnapshot())
             return
@@ -2015,7 +2010,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.refreshSettingsWindow()
                 self.clearModelProgress()
                 self.endActivity()
-                self.showStatus("Model update failed")
+                self.showStatus(self.modelUpdateFailedStatusText)
                 let alert = NSAlert()
                 alert.messageText = "Model update failed"
                 alert.informativeText = firstOutput.isEmpty ? "Check internet connection and try again." : firstOutput
@@ -2038,7 +2033,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.refreshSettingsWindow()
                     self.clearModelProgress()
                     self.endActivity()
-                    self.showStatus("Model update failed")
+                    self.showStatus(self.modelUpdateFailedStatusText)
                     let alert = NSAlert()
                     alert.messageText = "Model update failed"
                     alert.informativeText = secondOutput.isEmpty ? "Check internet connection and try again." : secondOutput
@@ -2061,7 +2056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.modelUpdateItem?.isEnabled = false
                         self.refreshSettingsWindow()
                         self.clearModelProgress()
-                        self.showStatus("Model update failed")
+                        self.showStatus(self.modelUpdateFailedStatusText)
                         let alert = NSAlert()
                         alert.messageText = "Model update failed"
                         alert.informativeText = thirdOutput.isEmpty ? "Check internet connection and try again." : thirdOutput
@@ -2074,7 +2069,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.setModelProgress(100, detail: "large-v3-turbo-q5_0")
                     self.modelUpdateItem?.isEnabled = false
                     self.refreshSettingsWindow()
-                    self.showStatus("Models updated")
+                    self.showStatus(self.modelUpdateCompletedStatusText)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                         self?.clearModelProgress()
                         self?.checkForUpdates(completion: completion)
@@ -2162,7 +2157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             command = "WHISPER_BIN=\(shellQuote(bundledWhisperBinaryPath)) \(command)"
         }
         var env = baseEnv
-        if let backendPath = bundledGGMLBackendPluginPath() {
+        if let backendPath = cachedBundledGGMLBackendPluginPath {
             env["GGML_BACKEND_PATH"] = backendPath
         }
         let languageCode = fallbackLanguageCode(for: languageMode)
@@ -2217,7 +2212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ]
 
         var environment = ProcessInfo.processInfo.environment
-        if let backendPath = bundledGGMLBackendPluginPath() {
+        if let backendPath = cachedBundledGGMLBackendPluginPath {
             environment["GGML_BACKEND_PATH"] = backendPath
         }
         process.environment = environment
@@ -2500,16 +2495,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeModel = model
         saveTranscribeModel()
         updateTranscribeModelMenuState()
-        showStatus("PTT ready: Shift+Fn / Shift+Control+Fn, model: \(transcribeModel.title)")
+        showStatus(readyStatusText)
     }
 
     private func setHotkey(rawValue _: String) {
-        showStatus("Hotkeys are fixed: Shift+Fn / Shift+Control+Fn")
+        showStatus(fixedHotkeyStatusText)
         refreshSettingsWindow()
     }
 
     private func setLanguageMode(rawValue _: String) {
-        showStatus("Language profiles are fixed: RU/EN and Hebrew")
+        showStatus(fixedLanguageProfileStatusText)
         refreshSettingsWindow()
     }
 
@@ -2525,7 +2520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setLaunchAtLogin(_ enabled: Bool) {
         if #unavailable(macOS 26.0) {
-            showStatus("Launch at Login unsupported on this macOS")
+            showStatus(launchAtLoginUnsupportedStatusText)
             UserDefaults.standard.set(false, forKey: launchAtLoginDefaultsKey)
             refreshSettingsWindow()
             return
@@ -2535,13 +2530,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let currentlyEnabled = isLaunchAtLoginEnabled()
             if currentlyEnabled && !enabled {
                 try SMAppService.mainApp.unregister()
-                showStatus("Launch at Login disabled")
+                showStatus(launchAtLoginDisabledStatusText)
             } else if !currentlyEnabled && enabled {
                 try SMAppService.mainApp.register()
-                showStatus("Launch at Login enabled")
+                showStatus(launchAtLoginEnabledStatusText)
             }
         } catch {
-            showStatus("Launch at Login error")
+            showStatus(launchAtLoginErrorStatusText)
         }
         updateLaunchAtLoginMenuState()
     }

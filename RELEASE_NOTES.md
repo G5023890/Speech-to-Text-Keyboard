@@ -1,6 +1,6 @@
 # Voice Input Release Notes
 
-## 0.0.1 installer bundle
+## 0.0.2 installer bundle
 
 This release ships a self-contained macOS installer:
 
@@ -16,5 +16,5 @@ This release ships a self-contained macOS installer:
 ## Notes
 
 - The installer is produced by `scripts/create_dmg.sh`.
-- The app version is `0.0.1`.
+- The app version is `0.0.2`.
 - The current build is intended for macOS `26.0+`.
