@@ -19,6 +19,8 @@ BUNDLED_MODEL_SOURCE="${BUNDLED_MODEL_SOURCE:-$HOME/Library/Application Support/
 WHISPER_LIB_SOURCE="${WHISPER_LIB_SOURCE:-/opt/homebrew/opt/whisper-cpp/lib/libwhisper.1.dylib}"
 GGML_LIB_SOURCE="${GGML_LIB_SOURCE:-/opt/homebrew/opt/ggml/lib/libggml.0.dylib}"
 GGML_BASE_LIB_SOURCE="${GGML_BASE_LIB_SOURCE:-/opt/homebrew/opt/ggml/lib/libggml-base.0.dylib}"
+GGML_BACKEND_LIB_DIR="${GGML_BACKEND_LIB_DIR:-/opt/homebrew/opt/ggml/libexec}"
+OMP_LIB_SOURCE="${OMP_LIB_SOURCE:-/opt/homebrew/opt/libomp/lib/libomp.dylib}"
 WHISPER_CLI_SOURCE="${WHISPER_CLI_SOURCE:-/opt/homebrew/opt/whisper-cpp/bin/whisper-cli}"
 RESOLVED_SIGN_IDENTITY=""
 DERIVED_DATA_DIR=""
@@ -89,8 +91,13 @@ resolve_sign_identity
 require_file "$WHISPER_LIB_SOURCE" "Bundled whisper library"
 require_file "$GGML_LIB_SOURCE" "Bundled ggml library"
 require_file "$GGML_BASE_LIB_SOURCE" "Bundled ggml-base library"
+require_file "$OMP_LIB_SOURCE" "Bundled OpenMP library"
 require_file "$WHISPER_CLI_SOURCE" "Bundled whisper-cli binary"
 require_file "$BUNDLED_MODEL_SOURCE" "Bundled baseline model"
+if [[ ! -d "$GGML_BACKEND_LIB_DIR" ]]; then
+  echo "Bundled ggml backend directory not found: $GGML_BACKEND_LIB_DIR" >&2
+  exit 1
+fi
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "xcodegen is required but not installed" >&2
@@ -118,6 +125,7 @@ trap cleanup EXIT
 bundle_runtime_dependencies() {
   local app_path="$1"
   local frameworks_dir="$app_path/Contents/Frameworks"
+  local backend_dir="$frameworks_dir/ggml-backends"
   local resources_bin_dir="$app_path/Contents/Resources/bin"
   local resources_models_dir="$app_path/Contents/Resources/Models"
   local app_binary="$app_path/Contents/MacOS/VoiceInputApp"
@@ -126,43 +134,62 @@ bundle_runtime_dependencies() {
   bundled_model_name="$(basename "$BUNDLED_MODEL_SOURCE")"
 
   mkdir -p "$frameworks_dir"
+  mkdir -p "$backend_dir"
   mkdir -p "$resources_bin_dir"
   mkdir -p "$resources_models_dir"
 
   cp -fL "$WHISPER_LIB_SOURCE" "$frameworks_dir/libwhisper.1.dylib"
   cp -fL "$GGML_LIB_SOURCE" "$frameworks_dir/libggml.0.dylib"
   cp -fL "$GGML_BASE_LIB_SOURCE" "$frameworks_dir/libggml-base.0.dylib"
+  cp -fL "$OMP_LIB_SOURCE" "$frameworks_dir/libomp.dylib"
   cp -fL "$WHISPER_CLI_SOURCE" "$bundled_cli_path"
   cp -fL "$BUNDLED_MODEL_SOURCE" "$resources_models_dir/$bundled_model_name"
+  find "$GGML_BACKEND_LIB_DIR" -maxdepth 1 -type f -name '*.so' -exec cp -fL {} "$backend_dir/" \;
 
-  chmod u+w "$frameworks_dir/libwhisper.1.dylib" "$frameworks_dir/libggml.0.dylib" "$frameworks_dir/libggml-base.0.dylib"
+  chmod u+w "$frameworks_dir/libwhisper.1.dylib" "$frameworks_dir/libggml.0.dylib" "$frameworks_dir/libggml-base.0.dylib" "$frameworks_dir/libomp.dylib"
   chmod u+w "$bundled_cli_path"
   chmod +x "$bundled_cli_path"
   chmod u+w "$resources_models_dir/$bundled_model_name"
+  find "$backend_dir" -type f -name '*.so' -exec chmod u+w {} \;
   xattr -cr "$frameworks_dir" "$resources_bin_dir" "$resources_models_dir" || true
 
   install_name_tool -id "@rpath/libwhisper.1.dylib" "$frameworks_dir/libwhisper.1.dylib"
   install_name_tool -id "@rpath/libggml.0.dylib" "$frameworks_dir/libggml.0.dylib"
   install_name_tool -id "@rpath/libggml-base.0.dylib" "$frameworks_dir/libggml-base.0.dylib"
+  install_name_tool -id "@rpath/libomp.dylib" "$frameworks_dir/libomp.dylib"
 
   install_name_tool -change "$WHISPER_LIB_SOURCE" "@executable_path/../Frameworks/libwhisper.1.dylib" "$app_binary"
   install_name_tool -change "$GGML_LIB_SOURCE" "@loader_path/libggml.0.dylib" "$frameworks_dir/libwhisper.1.dylib"
   install_name_tool -change "$GGML_BASE_LIB_SOURCE" "@loader_path/libggml-base.0.dylib" "$frameworks_dir/libwhisper.1.dylib"
+  install_name_tool -change "$OMP_LIB_SOURCE" "@loader_path/../libomp.dylib" "$backend_dir/libggml-cpu-apple_m1.so" 2>/dev/null || true
+  install_name_tool -change "$OMP_LIB_SOURCE" "@loader_path/../libomp.dylib" "$backend_dir/libggml-cpu-apple_m2_m3.so" 2>/dev/null || true
+  install_name_tool -change "$OMP_LIB_SOURCE" "@loader_path/../libomp.dylib" "$backend_dir/libggml-cpu-apple_m4.so" 2>/dev/null || true
   install_name_tool -change "@rpath/libggml-base.0.dylib" "@loader_path/libggml-base.0.dylib" "$frameworks_dir/libggml.0.dylib"
   install_name_tool -change "@rpath/libwhisper.1.dylib" "@executable_path/../../Frameworks/libwhisper.1.dylib" "$bundled_cli_path"
   install_name_tool -change "$GGML_LIB_SOURCE" "@executable_path/../../Frameworks/libggml.0.dylib" "$bundled_cli_path"
   install_name_tool -change "$GGML_BASE_LIB_SOURCE" "@executable_path/../../Frameworks/libggml-base.0.dylib" "$bundled_cli_path"
+  for backend_lib in "$backend_dir"/*.so; do
+    [[ -e "$backend_lib" ]] || continue
+    install_name_tool -change "@rpath/libggml-base.0.dylib" "@loader_path/../libggml-base.0.dylib" "$backend_lib" 2>/dev/null || true
+    install_name_tool -change "$OMP_LIB_SOURCE" "@loader_path/../libomp.dylib" "$backend_lib" 2>/dev/null || true
+  done
 }
 
 sign_app_bundle() {
   local app_path="$1"
   local frameworks_dir="$app_path/Contents/Frameworks"
+  local backend_dir="$frameworks_dir/ggml-backends"
   local bundled_cli_path="$app_path/Contents/Resources/bin/whisper-cli"
   chmod -R u+w "$app_path"
   xattr -cr "$app_path" || true
   if [[ -d "$frameworks_dir" ]]; then
     find "$frameworks_dir" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' dylib_path; do
       codesign --force --sign "$RESOLVED_SIGN_IDENTITY" "$dylib_path"
+    done
+  fi
+  if [[ -d "$backend_dir" ]]; then
+    find "$backend_dir" -type f -name '*.so' -print0 | while IFS= read -r -d '' plugin_path; do
+      codesign --force --sign "$RESOLVED_SIGN_IDENTITY" "$plugin_path"
     done
   fi
   if [[ -f "$bundled_cli_path" ]]; then

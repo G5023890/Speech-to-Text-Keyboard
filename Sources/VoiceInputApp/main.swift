@@ -242,8 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastControlTapAt: Date?
     private let doubleControlInterval: TimeInterval = 0.42
     private let learningSourceMaxAge: TimeInterval = 900
-    private let useNativeSpeechEngine = true
-    private let allowShellFallback = false
+    private let useNativeSpeechEngine = false
+    private let allowShellFallback = true
     private let bundledBaselineModel: TranscribeModel = .smallQ8
     private lazy var correctionEngine: CorrectionEngine = {
         CorrectionEngine(storageURL: URL(fileURLWithPath: correctionsFilePath))
@@ -260,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        configureGGMLBackendPath()
         ensureModelsDirectoryReady()
         loadUsageStats()
         loadTranscribeModel()
@@ -271,14 +272,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
         reloadControlCenterStatus()
-        if useNativeSpeechEngine {
-            Task { [weak self] in
-                guard let self else { return }
-                let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
-                try? await SpeechEngine.shared.warmup(modelPath: modelPath)
-            }
-        }
         showStatus("PTT ready: Shift+Fn / Shift+Control+Fn, model: \(transcribeModel.title)")
+    }
+
+    private func configureGGMLBackendPath() {
+        guard let backendPath = bundledGGMLBackendPluginPath() else {
+            let fallbackPath = "/opt/homebrew/opt/ggml/libexec"
+            guard FileManager.default.fileExists(atPath: fallbackPath) else {
+                appendRuntimeDiagnostic("ggml_backend_path_missing path=\(fallbackPath)")
+                return
+            }
+            setenv("GGML_BACKEND_PATH", fallbackPath, 1)
+            appendRuntimeDiagnostic("ggml_backend_path_set path=\(fallbackPath)")
+            return
+        }
+        setenv("GGML_BACKEND_PATH", backendPath, 1)
+        appendRuntimeDiagnostic("ggml_backend_path_set path=\(backendPath)")
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -307,6 +316,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    private func bundledGGMLBackendPluginPath() -> String? {
+        guard let frameworksURL = Bundle.main.privateFrameworksURL else {
+            return nil
+        }
+        let candidates = [
+            "ggml-backends/libggml-cpu-apple_m2_m3.so",
+            "ggml-backends/libggml-cpu-apple_m4.so",
+            "ggml-backends/libggml-cpu-apple_m1.so",
+            "ggml-backends/libggml-metal.so"
+        ]
+        for candidate in candidates {
+            let url = frameworksURL.appendingPathComponent(candidate)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url.path
+            }
+        }
+        return nil
     }
 
     private var legacyLowercaseModelsDirectoryPath: String {
@@ -953,6 +981,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if Thread.isMainThread {
+            processFlagsChanged(flags: flags)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.processFlagsChanged(flags: flags)
+            }
+        }
+    }
+
+    private func processFlagsChanged(flags: NSEvent.ModifierFlags) {
         handleDoubleControlLearningHotkey(flags: flags)
 
         let hotkeyHeld = HotkeyMode.activeProfile(for: flags)
@@ -2108,6 +2146,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             command = "WHISPER_BIN=\(shellQuote(bundledWhisperBinaryPath)) \(command)"
         }
         var env = baseEnv
+        if let backendPath = bundledGGMLBackendPluginPath() {
+            env["GGML_BACKEND_PATH"] = backendPath
+        }
         let languageCode = fallbackLanguageCode(for: languageMode)
         let effectiveLanguageCode = languageMode == .hebrew ? "auto" : languageCode
         env["WHISPER_LANGUAGE"] = languageCode

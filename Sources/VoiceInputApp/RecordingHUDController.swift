@@ -68,7 +68,6 @@ private struct FloatingParticle: Identifiable {
 
     let id = UUID()
     let side: Side
-    let text: String
     let startX: CGFloat
     let endX: CGFloat
     let startY: CGFloat
@@ -79,8 +78,7 @@ private struct FloatingParticle: Identifiable {
     let duration: Double
     let color: Color
     let glowColor: Color
-    let fontSize: CGFloat
-    let weight: Font.Weight
+    let size: CGFloat
 }
 
 private struct NotchGlow: Equatable {
@@ -97,10 +95,6 @@ private final class NotchAnimationViewModel: ObservableObject {
     private var spawnTimer: Timer?
     private var updateTimer: Timer?
     private(set) var metrics: NotchHUDMetrics?
-
-    private let soundMarks = ["♪", "♫", "~", "≋", "∿", "⌇", "⋯", "∾", "⁓", "♬"]
-    private let words = ["ru", "en", "he", "dict", "word", "flow", "live", "stt"]
-    private let codeSnippets = ["buf()", "mic", "wav", "stt", "txt", "tap", "vad"]
 
     func start(metrics: NotchHUDMetrics) {
         self.metrics = metrics
@@ -163,7 +157,6 @@ private final class NotchAnimationViewModel: ObservableObject {
         if side == .screenLeft {
             return FloatingParticle(
                 side: .screenLeft,
-                text: soundMarks.randomElement() ?? "♪",
                 startX: leftStart,
                 endX: leftEnd,
                 startY: startY,
@@ -173,15 +166,12 @@ private final class NotchAnimationViewModel: ObservableObject {
                 duration: duration,
                 color: Color(red: 0.78, green: 0.98, blue: 1.0),
                 glowColor: Color(red: 0.50, green: 0.88, blue: 1.0),
-                fontSize: min(15.5, max(11, bandHeight - 10)),
-                weight: .heavy
+                size: min(14, max(8, bandHeight - 14))
             )
         }
 
-        let emitsCode = Bool.random()
         return FloatingParticle(
             side: .screenRight,
-            text: emitsCode ? (codeSnippets.randomElement() ?? "transcribe()") : (words.randomElement() ?? "voice"),
             startX: rightStart,
             endX: rightEnd,
             startY: startY,
@@ -189,14 +179,9 @@ private final class NotchAnimationViewModel: ObservableObject {
             controlX: notchMaxX + CGFloat.random(in: 24...42),
             controlY: CGFloat.random(in: minY...maxY),
             duration: duration,
-            color: emitsCode
-                ? Color(red: 0.80, green: 1.0, blue: 0.90)
-                : Color(red: 1.0, green: 0.98, blue: 0.72),
-            glowColor: emitsCode
-                ? Color(red: 0.44, green: 1.0, blue: 0.82)
-                : Color(red: 1.0, green: 0.90, blue: 0.40),
-            fontSize: min(10.5, max(7.5, bandHeight - 16)),
-            weight: emitsCode ? .bold : .heavy
+            color: Color(red: 0.80, green: 1.0, blue: 0.90),
+            glowColor: Color(red: 0.44, green: 1.0, blue: 0.82),
+            size: min(11, max(7, bandHeight - 16))
         )
     }
 
@@ -235,9 +220,9 @@ private struct ParticleView: View {
             + t * t * particle.endY
         let alpha = particleOpacity(for: t)
 
-        Text(particle.text)
-            .font(.system(size: particle.fontSize, weight: particle.weight, design: .monospaced))
-            .foregroundStyle(particle.color.opacity(alpha))
+        RoundedRectangle(cornerRadius: particle.size / 2, style: .continuous)
+            .fill(particle.color.opacity(alpha))
+            .frame(width: particle.size * 1.7, height: particle.size * 0.72)
             .shadow(color: .black.opacity(alpha * 0.55), radius: 1.5, x: 0, y: 1)
             .shadow(color: particle.glowColor.opacity(alpha), radius: 10)
             .shadow(color: particle.glowColor.opacity(alpha * 0.9), radius: 20)
@@ -521,18 +506,25 @@ private struct RecordingHUDView: View {
     var body: some View {
         Group {
             if state.isVisible {
-                ZStack {
-                    NotchGlowView(glow: notchGlow)
+                HStack(spacing: 8) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.16))
+                        .frame(width: 18, height: 4)
 
-                    BeamLines(metrics: state.metrics)
+                    Circle()
+                        .fill(Color(red: 0.54, green: 1.0, blue: 0.80))
+                        .frame(width: 7, height: 7)
+                        .scaleEffect(isVisiblePulse ? 1.0 : 0.68)
 
-                    ForEach(animationViewModel.particles) { particle in
-                        ParticleView(particle: particle)
-                    }
-
-                    NotchView(metrics: state.metrics, isVisible: true)
+                    Capsule()
+                        .fill(Color.white.opacity(0.16))
+                        .frame(width: 18, height: 4)
                 }
-                .drawingGroup()
+                .frame(width: max(72, state.metrics.notchRect.width * 0.42), height: max(14, state.metrics.bandHeight * 0.34))
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.black.opacity(0.18))
+                )
             } else {
                 Color.clear
             }
@@ -550,7 +542,12 @@ private struct RecordingHUDView: View {
                 animationViewModel.start(metrics: metrics)
             }
         }
+        .onAppear {
+            isVisiblePulse = true
+        }
     }
+
+    @State private var isVisiblePulse = false
 }
 
 final class RecordingHUDController {
