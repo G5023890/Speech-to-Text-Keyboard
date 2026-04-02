@@ -242,7 +242,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastControlTapAt: Date?
     private let doubleControlInterval: TimeInterval = 0.42
     private let learningSourceMaxAge: TimeInterval = 900
+    // Native whisper backend is unstable on current beta macOS builds and
+    // can abort during context initialization. Keep the bundled CLI path as
+    // the default so the app stays alive and keeps working.
     private let useNativeSpeechEngine = false
+    // Native decoding is still available, but only in an isolated helper
+    // process so a ggml abort cannot take down the UI process.
+    private let useNativeDecodeHelper = true
     private let allowShellFallback = true
     private let bundledBaselineModel: TranscribeModel = .smallQ8
     private lazy var correctionEngine: CorrectionEngine = {
@@ -276,14 +282,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureGGMLBackendPath() {
-        guard let backendPath = bundledGGMLBackendPluginPath() else {
-            let fallbackPath = "/opt/homebrew/opt/ggml/libexec"
-            guard FileManager.default.fileExists(atPath: fallbackPath) else {
-                appendRuntimeDiagnostic("ggml_backend_path_missing path=\(fallbackPath)")
-                return
-            }
-            setenv("GGML_BACKEND_PATH", fallbackPath, 1)
-            appendRuntimeDiagnostic("ggml_backend_path_set path=\(fallbackPath)")
+        guard let backendPath = cachedBundledGGMLBackendPluginPath else {
+            appendRuntimeDiagnostic("ggml_backend_path_missing path=bundled")
             return
         }
         setenv("GGML_BACKEND_PATH", backendPath, 1)
@@ -389,12 +389,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         {
             return bundled
         }
-        let local = "\(FileManager.default.currentDirectoryPath)/scripts/ptt_whisper.sh"
-        if FileManager.default.isExecutableFile(atPath: local) {
-            return local
-        }
         return nil
     }
+
+    private lazy var cachedBundledGGMLBackendPluginPath: String? = {
+        bundledGGMLBackendPluginPath()
+    }()
 
     private func ensureModelsDirectoryReady() {
         let fileManager = FileManager.default
@@ -1440,7 +1440,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var finalLanguage = recordingMode.languageMode.whisperLanguageCode
                 var finalConfidence: Float = 0.55
 
-                if self.useNativeSpeechEngine {
+                if self.useNativeDecodeHelper {
+                    do {
+                        let helper = try await self.transcribeViaNativeDecodeHelper(
+                            samples: finalSamples,
+                            modelPath: modelPath,
+                            languageMode: recordingMode.languageMode
+                        )
+                        finalText = helper.text
+                        finalLanguage = helper.detectedLanguageCode
+                        finalConfidence = helper.confidence
+                        self.appendRuntimeDiagnostic("native_helper_done text_len=\(finalText.count) conf=\(String(format: "%.2f", finalConfidence)) lang=\(finalLanguage ?? "nil")")
+                    } catch {
+                        self.appendRuntimeDiagnostic("native_helper_failed error=\(error.localizedDescription)")
+                    }
+                } else if self.useNativeSpeechEngine {
                     let output = try await SpeechEngine.shared.transcribe(
                         samples: finalSamples,
                         modelPath: modelPath,
@@ -1453,7 +1467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.appendRuntimeDiagnostic("native_decode_done text_len=\(finalText.count) conf=\(String(format: "%.2f", finalConfidence)) lang=\(finalLanguage ?? "nil")")
                 }
 
-                if allowShellFallback && (!self.useNativeSpeechEngine || finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                if allowShellFallback && (finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                     self.appendRuntimeDiagnostic("native_empty_try_cli_fallback")
                     do {
                         let fallback = try await self.transcribeViaScriptFallback(
@@ -2128,8 +2142,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         try FileManager.default.createDirectory(atPath: runtimeDirectoryPath, withIntermediateDirectories: true)
-        let wavPath = recordingPath
+        let wavPath = "\(runtimeDirectoryPath)/fallback-\(UUID().uuidString).wav"
         try writeSamplesAsWav(samples, to: wavPath)
+        appendRuntimeDiagnostic("cli_fallback_wav_written path=\(wavPath) exists=\(FileManager.default.fileExists(atPath: wavPath))")
+        defer {
+            try? FileManager.default.removeItem(atPath: wavPath)
+        }
 
         let baseEnv: [String: String] = [
             "WHISPER_MODEL": modelPath,
@@ -2137,8 +2155,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "WHISPER_APP_SUPPORT_DIR": appSupportDirectoryPath,
             "WHISPER_RUNTIME_DIR": runtimeDirectoryPath,
             "WHISPER_THREADS": "\(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))",
-            "WHISPER_BEAM_SIZE": "1",
-            "WHISPER_BEST_OF": "1",
             "WHISPER_GPU_FALLBACK": "1"
         ]
         var command = "\(shellQuote(scriptPath)) transcribe \(shellQuote(wavPath))"
@@ -2168,6 +2184,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             text: output.trimmingCharacters(in: .whitespacesAndNewlines),
             languageCode: languageMode == .auto || languageMode == .russianEnglish ? nil : effectiveLanguageCode
         )
+    }
+
+    private func transcribeViaNativeDecodeHelper(
+        samples: [Float],
+        modelPath: String,
+        languageMode: LanguageMode
+    ) async throws -> TranscriptionOutput {
+        guard let executableURL = Bundle.main.executableURL else {
+            throw NSError(domain: "VoiceInput", code: 3201, userInfo: [NSLocalizedDescriptionKey: "App executable not found"])
+        }
+        guard !samples.isEmpty else {
+            return TranscriptionOutput(text: "", detectedLanguageCode: nil, confidence: 0)
+        }
+
+        try FileManager.default.createDirectory(atPath: runtimeDirectoryPath, withIntermediateDirectories: true)
+        let wavPath = "\(runtimeDirectoryPath)/native-\(UUID().uuidString).wav"
+        try writeSamplesAsWav(samples, to: wavPath)
+        defer {
+            try? FileManager.default.removeItem(atPath: wavPath)
+        }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = [
+            "--voice-input-native-helper",
+            "--audio-path", wavPath,
+            "--model-path", modelPath,
+            "--language-mode", languageMode.rawValue,
+            "--pass", "final",
+            "--quality-mode", UserDefaults.standard.string(forKey: "qualityMode") ?? QualityMode.balanced.rawValue
+        ]
+
+        var environment = ProcessInfo.processInfo.environment
+        if let backendPath = bundledGGMLBackendPluginPath() {
+            environment["GGML_BACKEND_PATH"] = backendPath
+        }
+        process.environment = environment
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { proc in
+                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let output = (String(data: outData, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let errorOutput = (String(data: errData, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if proc.terminationStatus != 0 {
+                    continuation.resume(throwing: NSError(
+                        domain: "VoiceInput",
+                        code: 3202,
+                        userInfo: [NSLocalizedDescriptionKey: errorOutput.isEmpty ? output : errorOutput]
+                    ))
+                    return
+                }
+
+                guard let data = output.data(using: .utf8) else {
+                    continuation.resume(throwing: NSError(domain: "VoiceInput", code: 3203, userInfo: [NSLocalizedDescriptionKey: "Native helper returned no data"]))
+                    return
+                }
+
+                do {
+                    let decoded = try JSONDecoder().decode(TranscriptionOutput.self, from: data)
+                    continuation.resume(returning: decoded)
+                } catch {
+                    continuation.resume(throwing: NSError(
+                        domain: "VoiceInput",
+                        code: 3204,
+                        userInfo: [NSLocalizedDescriptionKey: error.localizedDescription.isEmpty ? "Failed to decode native helper output" : error.localizedDescription]
+                    ))
+                }
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
     private func writeSamplesAsWav(_ samples: [Float], to path: String) throws {
@@ -2402,12 +2500,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeModel = model
         saveTranscribeModel()
         updateTranscribeModelMenuState()
-        if useNativeSpeechEngine {
-            let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
-            Task {
-                try? await SpeechEngine.shared.warmup(modelPath: modelPath)
-            }
-        }
         showStatus("PTT ready: Shift+Fn / Shift+Control+Fn, model: \(transcribeModel.title)")
     }
 
@@ -2457,6 +2549,188 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
+}
+
+private enum NativeTranscriptionHelper {
+    private struct Request {
+        let audioPath: String
+        let modelPath: String
+        let languageMode: LanguageMode
+        let pass: TranscriptionPass
+        let qualityModeRaw: String
+    }
+
+    static func handleIfNeeded() -> Bool {
+        guard CommandLine.arguments.contains("--voice-input-native-helper") else {
+            return false
+        }
+        run()
+        return true
+    }
+
+    private static func run() {
+        do {
+            let request = try parseRequest()
+            configureBackendPath()
+            UserDefaults.standard.set(request.qualityModeRaw, forKey: "qualityMode")
+            let samples = try readSamples(from: request.audioPath)
+            let semaphore = DispatchSemaphore(value: 0)
+            var result: TranscriptionOutput?
+            var failure: Error?
+
+            Task {
+                do {
+                    result = try await SpeechEngine.shared.transcribe(
+                        samples: samples,
+                        modelPath: request.modelPath,
+                        languageMode: request.languageMode,
+                        pass: request.pass
+                    )
+                } catch {
+                    failure = error
+                }
+                semaphore.signal()
+            }
+
+            let waitResult = semaphore.wait(timeout: .now() + 90.0)
+            if waitResult == .timedOut {
+                fputs("native helper timed out\n", stderr)
+                exit(124)
+            }
+            if let failure {
+                fputs("\(failure.localizedDescription)\n", stderr)
+                exit(1)
+            }
+            guard let result else {
+                fputs("native helper produced no result\n", stderr)
+                exit(1)
+            }
+
+            let data = try JSONEncoder().encode(result)
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data([0x0A]))
+            exit(0)
+        } catch {
+            fputs("\(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+
+    private static func parseRequest() throws -> Request {
+        let args = CommandLine.arguments
+        func value(after flag: String) -> String? {
+            guard let index = args.firstIndex(of: flag), index + 1 < args.count else {
+                return nil
+            }
+            return args[index + 1]
+        }
+
+        guard
+            let audioPath = value(after: "--audio-path"),
+            let modelPath = value(after: "--model-path"),
+            let languageRaw = value(after: "--language-mode"),
+            let languageMode = LanguageMode(rawValue: languageRaw),
+            let passRaw = value(after: "--pass"),
+            let qualityModeRaw = value(after: "--quality-mode")
+        else {
+            throw NSError(domain: "VoiceInput", code: 3301, userInfo: [NSLocalizedDescriptionKey: "Missing native helper arguments"])
+        }
+
+        let pass: TranscriptionPass
+        switch passRaw {
+        case "partial":
+            pass = .partial
+        case "final":
+            pass = .final
+        default:
+            throw NSError(domain: "VoiceInput", code: 3302, userInfo: [NSLocalizedDescriptionKey: "Invalid helper pass"])
+        }
+
+        return Request(
+            audioPath: audioPath,
+            modelPath: modelPath,
+            languageMode: languageMode,
+            pass: pass,
+            qualityModeRaw: qualityModeRaw
+        )
+    }
+
+    private static func configureBackendPath() {
+        guard let frameworksURL = Bundle.main.privateFrameworksURL else {
+            return
+        }
+        let candidates = [
+            "ggml-backends/libggml-cpu-apple_m2_m3.so",
+            "ggml-backends/libggml-cpu-apple_m4.so",
+            "ggml-backends/libggml-cpu-apple_m1.so",
+            "ggml-backends/libggml-metal.so"
+        ]
+        for candidate in candidates {
+            let url = frameworksURL.appendingPathComponent(candidate)
+            if FileManager.default.fileExists(atPath: url.path) {
+                setenv("GGML_BACKEND_PATH", url.path, 1)
+                return
+            }
+        }
+    }
+
+    private static func readSamples(from path: String) throws -> [Float] {
+        let url = URL(fileURLWithPath: path)
+        let file = try AVAudioFile(forReading: url)
+        let frameCount = AVAudioFrameCount(file.length)
+        guard frameCount > 0 else {
+            return []
+        }
+
+        let sourceFormat = file.processingFormat
+        guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount) else {
+            throw NSError(domain: "VoiceInput", code: 3303, userInfo: [NSLocalizedDescriptionKey: "Unable to allocate audio buffer"])
+        }
+        try file.read(into: sourceBuffer)
+
+        let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sourceFormat.sampleRate,
+            channels: sourceFormat.channelCount,
+            interleaved: false
+        )
+
+        if sourceFormat.commonFormat == .pcmFormatFloat32, let floatData = sourceBuffer.floatChannelData?.pointee {
+            let samples = Array(UnsafeBufferPointer(start: floatData, count: Int(sourceBuffer.frameLength)))
+            return samples
+        }
+
+        if let targetFormat, let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) {
+            guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCount) else {
+                throw NSError(domain: "VoiceInput", code: 3303, userInfo: [NSLocalizedDescriptionKey: "Unable to allocate conversion buffer"])
+            }
+            var convertError: NSError?
+            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                outStatus.pointee = .haveData
+                return sourceBuffer
+            }
+            converter.convert(to: converted, error: &convertError, withInputFrom: inputBlock)
+            if let convertError {
+                throw convertError
+            }
+            if let floatData = converted.floatChannelData?.pointee {
+                let samples = Array(UnsafeBufferPointer(start: floatData, count: Int(converted.frameLength)))
+                return samples
+            }
+        }
+
+        if let intData = sourceBuffer.int16ChannelData?.pointee {
+            let count = Int(sourceBuffer.frameLength)
+            return (0..<count).map { index in
+                Float(intData[index]) / Float(Int16.max)
+            }
+        }
+        throw NSError(domain: "VoiceInput", code: 3304, userInfo: [NSLocalizedDescriptionKey: "Unsupported audio buffer format"])
+    }
+}
+
+if NativeTranscriptionHelper.handleIfNeeded() {
+    exit(0)
 }
 
 let app = NSApplication.shared

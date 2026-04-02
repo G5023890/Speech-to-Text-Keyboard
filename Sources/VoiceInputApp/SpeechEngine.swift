@@ -12,7 +12,7 @@ enum TranscriptionPass {
     case final
 }
 
-struct TranscriptionOutput {
+struct TranscriptionOutput: Codable {
     let text: String
     let detectedLanguageCode: String?
     let confidence: Float
@@ -28,10 +28,6 @@ actor SpeechEngine {
     private var adaptiveLanguageHint: String?
     private var languageStreakCode: String?
     private var languageStreakCount: Int = 0
-
-    func warmup(modelPath: String) async throws {
-        try ensureContext(modelPath: modelPath)
-    }
 
     func transcribe(
         samples: [Float],

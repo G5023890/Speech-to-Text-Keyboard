@@ -61,6 +61,18 @@ The app is installed to:
 /Applications/Voice Input.app
 ```
 
+The release installer is generated at:
+
+```text
+dist/Voice Input.dmg
+```
+
+To build just the installer from the current `.app`:
+
+```bash
+./scripts/create_dmg.sh
+```
+
 After install:
 
 - app path: `/Applications/Voice Input.app`
@@ -136,6 +148,14 @@ Release notes for `0.0.1`:
 - fixed hotkey profiles for `RU/EN` and `עברית`
 - stronger language locking in transcription and post-processing
 - user corrections ignore known bad pairs like `мне -> не`
+
+## Installer Release
+
+Current installer bundle:
+
+- `dist/Voice Input.dmg`
+- app version: `0.0.1`
+- installer script: `scripts/create_dmg.sh`
 
 ## Term Glossary
 

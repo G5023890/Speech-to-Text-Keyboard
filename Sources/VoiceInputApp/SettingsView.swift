@@ -313,6 +313,13 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if let qualityWarningText = modelQualityWarningText {
+                        WarningCallout(
+                            title: "Низкая точность",
+                            message: qualityWarningText
+                        )
+                    }
+
                     SettingsRow("Размер") {
                         Text(modelSizeBadgeText ?? "—")
                             .font(VITypography.rowValue)
@@ -374,6 +381,15 @@ struct SettingsView: View {
         return "≈ \(descriptor.approxSizeMB) MB"
     }
 
+    private var modelQualityWarningText: String? {
+        guard modelManager.installedDescriptors.count == 1,
+              let descriptor = modelManager.activeModelDescriptor,
+              descriptor.id == TranscribeModel.smallQ8.rawValue else {
+            return nil
+        }
+        return "Сейчас установлена только Small q8_0. Она самая быстрая, но заметно хуже распознает смешанный RU/EN и короткие слова. Для лучшей точности лучше Medium или Large v3 Turbo."
+    }
+
     private var installedModelsText: String {
         let count = modelManager.installedModelIDs.count
         if count == 1 {
@@ -406,5 +422,40 @@ struct SettingsView: View {
         launchAtLogin = viewModel.snapshot.launchAtLoginEnabled
         showsMenuBarIcon = viewModel.snapshot.showsMenuBarIcon
         selectedModelID = viewModel.snapshot.selectedModelID
+    }
+}
+
+private struct WarningCallout: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.system(size: 16, weight: .semibold))
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(VITypography.rowLabel)
+                    .foregroundStyle(.primary)
+                Text(message)
+                    .font(VITypography.rowHint)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.orange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.orange.opacity(0.20), lineWidth: 1)
+        )
     }
 }
