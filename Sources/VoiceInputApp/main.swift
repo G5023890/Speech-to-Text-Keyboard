@@ -1,46 +1,51 @@
 import AppKit
-import ApplicationServices
+@preconcurrency import ApplicationServices
 import AVFoundation
 import Foundation
 import QuartzCore
 import ServiceManagement
 import SwiftUI
+import WidgetKit
 
 enum HotkeyMode: String, CaseIterable {
-    case shiftOption
-    case shiftControl
-    case shiftCommand
-    case shiftFn
-    case fn
+    case ruEnShiftFn
+    case hebrewShiftControlFn
 
     var title: String {
         switch self {
-        case .shiftOption:
-            return "Shift+Option"
-        case .shiftControl:
-            return "Shift+Control"
-        case .shiftCommand:
-            return "Shift+Command"
-        case .shiftFn:
-            return "Shift+Fn"
-        case .fn:
-            return "Fn"
+        case .ruEnShiftFn:
+            return "Shift+Fn — RU/EN"
+        case .hebrewShiftControlFn:
+            return "Shift+Control+Fn — עברית"
+        }
+    }
+
+    var languageMode: LanguageMode {
+        switch self {
+        case .ruEnShiftFn:
+            return .russianEnglish
+        case .hebrewShiftControlFn:
+            return .hebrew
         }
     }
 
     func isPressed(flags: NSEvent.ModifierFlags) -> Bool {
         switch self {
-        case .shiftOption:
-            return flags.contains(.shift) && flags.contains(.option)
-        case .shiftControl:
-            return flags.contains(.shift) && flags.contains(.control)
-        case .shiftCommand:
-            return flags.contains(.shift) && flags.contains(.command)
-        case .shiftFn:
-            return flags.contains(.shift) && flags.contains(.function)
-        case .fn:
-            return flags.contains(.function)
+        case .ruEnShiftFn:
+            return flags.contains(.shift) && flags.contains(.function) && !flags.contains(.control)
+        case .hebrewShiftControlFn:
+            return flags.contains(.shift) && flags.contains(.control) && flags.contains(.function)
         }
+    }
+
+    static func activeProfile(for flags: NSEvent.ModifierFlags) -> HotkeyMode? {
+        if HotkeyMode.hebrewShiftControlFn.isPressed(flags: flags) {
+            return .hebrewShiftControlFn
+        }
+        if HotkeyMode.ruEnShiftFn.isPressed(flags: flags) {
+            return .ruEnShiftFn
+        }
+        return nil
     }
 }
 
@@ -104,20 +109,34 @@ enum TranscribeModel: String, CaseIterable {
 }
 
 final class SettingsWindow: NSWindow {
-    override func keyDown(with event: NSEvent) {
+    private func handleCloseShortcut(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = event.charactersIgnoringModifiers?.lowercased()
 
         if event.keyCode == 53 {
             performClose(nil)
-            return
+            return true
         }
         if modifiers.contains(.command), key == "w" {
             performClose(nil)
+            return true
+        }
+        return false
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if handleCloseShortcut(event) {
             return
         }
 
         super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleCloseShortcut(event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     override func cancelOperation(_ sender: Any?) {
@@ -174,11 +193,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let appSupportSubdir = "Voice Input"
+    private let fixedHotkeyDescription = "Shift+Fn / Shift+Control+Fn"
+    private let microphonePermissionDeniedStatusText = "Microphone permission denied"
+    private let noSpeechDetectedStatusText = "No speech detected"
+    private let sttErrorStatusText = "STT error"
+    private let audioEngineErrorStatusText = "Audio engine error"
+    private let modelUpdateFailedStatusText = "Model update failed"
+    private let modelUpdateStartingStatusText = "Updating models..."
+    private let modelUpdateCompletedStatusText = "Models updated"
+    private let launchAtLoginUnsupportedStatusText = "Launch at Login unsupported on this macOS"
+    private let launchAtLoginDisabledStatusText = "Launch at Login disabled"
+    private let launchAtLoginEnabledStatusText = "Launch at Login enabled"
+    private let launchAtLoginErrorStatusText = "Launch at Login error"
+    private let pasteBlockedStatusText = "Paste blocked, text copied"
+    private let pastedStatusText = "Pasted"
 
     private var statusItem: NSStatusItem?
     private var menuBarIconImage: NSImage?
     private var loadingIndicator: NSProgressIndicator?
     private let hudController = RecordingHUDController()
+    private let learningHUDController = LearningFeedbackHUDController()
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var isRecording = false
@@ -202,13 +236,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statsTotalItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var settingsViewModel: SettingsViewModel?
-    private let hotkeyDefaultsKey = "voice_input_hotkey_mode"
     private let transcribeModelDefaultsKey = "voice_input_transcribe_model"
-    private let languageModeDefaultsKey = "voice_input_language_mode"
     private let launchAtLoginDefaultsKey = "voice_input_launch_at_login"
-    private var hotkeyMode: HotkeyMode = .shiftOption
-    private var transcribeModel: TranscribeModel = .mediumQ5
-    private var languageMode: LanguageMode = .auto
+    private let maxRecordingSecondsDefaultsKey = "voice_input_max_recording_seconds"
+    private var currentRecordingHotkeyMode: HotkeyMode?
+    private var transcribeModel: TranscribeModel = .smallQ8
     private var modelUpdateInProgress = false
     private var updateCheckInProgress = false
     private var modelUpdateAvailable = false
@@ -218,6 +250,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clipboardRestoreState: ClipboardRestoreState?
     private var usageStats = UsageStats()
     private var lastAcceptedTranscript: String = ""
+    private var lastInsertedTranscript: String = ""
+    private var lastInsertedAt: Date?
+    private var wasControlPressed = false
+    private var lastControlTapAt: Date?
+    private let doubleControlInterval: TimeInterval = 0.42
+    private let learningSourceMaxAge: TimeInterval = 900
+    // Native whisper backend is unstable on current beta macOS builds and
+    // can abort during context initialization. Keep the bundled CLI path as
+    // the default so the app stays alive and keeps working.
+    private let useNativeSpeechEngine = false
+    // Native decoding is still available, but only in an isolated helper
+    // process so a ggml abort cannot take down the UI process.
+    private let useNativeDecodeHelper = true
+    private let allowShellFallback = true
+    private let bundledBaselineModel: TranscribeModel = .smallQ8
+    private lazy var correctionEngine: CorrectionEngine = {
+        CorrectionEngine(storageURL: URL(fileURLWithPath: correctionsFilePath))
+    }()
     private let managedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-large-v3-turbo-q5_0.bin"]
     private let legacyManagedModels = ["ggml-medium-q5_0.bin", "ggml-small-q5_1.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-medium.bin", "ggml-small.bin"]
     private let dayKeyFormatter: DateFormatter = {
@@ -228,24 +278,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        configureGGMLBackendPath()
         ensureModelsDirectoryReady()
         loadUsageStats()
-        loadHotkeyMode()
         loadTranscribeModel()
-        loadLanguageMode()
-        setupStatusItem()
+        reconcileSelectedModel()
+        _ = correctionEngine
+        installOpenURLHandler()
+        updateStatusItemVisibility()
         ensureAccessibilityPermission()
         ensureMicrophonePermission { _ in }
         setupHotkeyMonitors()
-        Task { [weak self] in
-            guard let self else { return }
-            let modelPath = "\(self.modelsDirectoryPath)/\(self.transcribeModel.fileName)"
-            try? await SpeechEngine.shared.warmup(modelPath: modelPath)
+        reloadControlCenterStatus()
+        showStatus(readyStatusText)
+    }
+
+    private func configureGGMLBackendPath() {
+        guard let backendPath = cachedBundledGGMLBackendPluginPath else {
+            appendRuntimeDiagnostic("ggml_backend_path_missing path=bundled")
+            return
         }
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
+        setenv("GGML_BACKEND_PATH", backendPath, 1)
+        appendRuntimeDiagnostic("ggml_backend_path_set path=\(backendPath)")
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !showsMenuBarIcon() {
+            openSettingsWindow()
+            return false
+        }
+        return false
     }
 
     private var appSupportDirectoryPath: String {
@@ -257,8 +321,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "\(appSupportDirectoryPath)/Models"
     }
 
-    private var legacyLowercaseModelsDirectoryPath: String {
-        return "\(appSupportDirectoryPath)/models"
+    private var bundledModelsDirectoryPath: String? {
+        Bundle.main.resourceURL?.appendingPathComponent("Models", isDirectory: true).path
+    }
+
+    private var bundledWhisperBinaryPath: String? {
+        guard let path = Bundle.main.resourceURL?.appendingPathComponent("bin/whisper-cli").path else {
+            return nil
+        }
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    private func bundledGGMLBackendPluginPath() -> String? {
+        guard let frameworksURL = Bundle.main.privateFrameworksURL else {
+            return nil
+        }
+        let candidates = [
+            "ggml-backends/libggml-cpu-apple_m2_m3.so",
+            "ggml-backends/libggml-cpu-apple_m4.so",
+            "ggml-backends/libggml-cpu-apple_m1.so",
+            "ggml-backends/libggml-metal.so"
+        ]
+        for candidate in candidates {
+            let url = frameworksURL.appendingPathComponent(candidate)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url.path
+            }
+        }
+        return nil
     }
 
     private var downloadsDirectoryPath: String {
@@ -267,10 +357,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var catalogDirectoryPath: String {
         return "\(appSupportDirectoryPath)/Catalog"
-    }
-
-    private var legacyModelsDirectoryPath: String {
-        return "\(NSHomeDirectory())/Documents/Develop/Voice input/models"
     }
 
     private var runtimeDirectoryPath: String {
@@ -293,55 +379,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "\(appSupportDirectoryPath)/runtime_diagnostics.log"
     }
 
+    private var maxRecordingSeconds: Double {
+        let stored = UserDefaults.standard.double(forKey: maxRecordingSecondsDefaultsKey)
+        let value = stored > 0 ? stored : 20.0
+        return max(3.0, min(value, AudioManager.maxBufferSeconds))
+    }
+
+    private var correctionsFilePath: String {
+        return "\(appSupportDirectoryPath)/corrections.json"
+    }
+
     private var transcribeScriptPath: String? {
         if let bundled = Bundle.main.path(forResource: "ptt_whisper", ofType: "sh"),
            FileManager.default.isExecutableFile(atPath: bundled)
         {
             return bundled
         }
-        let local = "\(FileManager.default.currentDirectoryPath)/scripts/ptt_whisper.sh"
-        if FileManager.default.isExecutableFile(atPath: local) {
-            return local
-        }
         return nil
     }
+
+    private lazy var cachedBundledGGMLBackendPluginPath: String? = {
+        bundledGGMLBackendPluginPath()
+    }()
 
     private func ensureModelsDirectoryReady() {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(atPath: appSupportDirectoryPath, withIntermediateDirectories: true)
         try? fileManager.createDirectory(atPath: modelsDirectoryPath, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(atPath: downloadsDirectoryPath, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(atPath: catalogDirectoryPath, withIntermediateDirectories: true)
 
-        if fileManager.fileExists(atPath: legacyLowercaseModelsDirectoryPath),
-           let files = try? fileManager.contentsOfDirectory(atPath: legacyLowercaseModelsDirectoryPath)
+        if let bundledModelsDirectoryPath,
+           fileManager.fileExists(atPath: bundledModelsDirectoryPath),
+           let files = try? fileManager.contentsOfDirectory(atPath: bundledModelsDirectoryPath)
         {
             for file in files where file.hasSuffix(".bin") {
-                let oldPath = "\(legacyLowercaseModelsDirectoryPath)/\(file)"
-                let newPath = "\(modelsDirectoryPath)/\(file)"
-                if !fileManager.fileExists(atPath: newPath) {
-                    try? fileManager.copyItem(atPath: oldPath, toPath: newPath)
+                let bundledPath = "\(bundledModelsDirectoryPath)/\(file)"
+                let destinationPath = "\(modelsDirectoryPath)/\(file)"
+                if !fileManager.fileExists(atPath: destinationPath) {
+                    try? fileManager.copyItem(atPath: bundledPath, toPath: destinationPath)
                 }
-            }
-        }
-
-        for model in legacyManagedModels {
-            let newPath = "\(modelsDirectoryPath)/\(model)"
-            if fileManager.fileExists(atPath: newPath) {
-                continue
-            }
-            let oldPath = "\(legacyModelsDirectoryPath)/\(model)"
-            if fileManager.fileExists(atPath: oldPath) {
-                try? fileManager.copyItem(atPath: oldPath, toPath: newPath)
             }
         }
     }
 
+    private func isModelInstalled(_ model: TranscribeModel) -> Bool {
+        FileManager.default.fileExists(atPath: "\(modelsDirectoryPath)/\(model.fileName)")
+    }
+
+    private func reconcileSelectedModel() {
+        if isModelInstalled(transcribeModel) {
+            return
+        }
+
+        if isModelInstalled(bundledBaselineModel) {
+            transcribeModel = bundledBaselineModel
+            saveTranscribeModel()
+            return
+        }
+
+        if let firstAvailable = TranscribeModel.allCases.first(where: isModelInstalled(_:)) {
+            transcribeModel = firstAvailable
+            saveTranscribeModel()
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        reloadControlCenterStatus()
         partialLoopTask?.cancel()
         partialLoopTask = nil
         audioManager.stop()
         hudController.hide(immediately: true)
+        learningHUDController.hide(immediately: true)
         if let globalFlagsMonitor {
             NSEvent.removeMonitor(globalFlagsMonitor)
         }
@@ -351,6 +458,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupStatusItem() {
+        guard statusItem == nil else {
+            return
+        }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
             if let image = loadMenuBarIcon() {
@@ -392,6 +502,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         item.menu = menu
         statusItem = item
+        updateMenuBarLoadingState()
+    }
+
+    private func removeStatusItem() {
+        guard let statusItem else {
+            return
+        }
+        NSStatusBar.system.removeStatusItem(statusItem)
+        self.statusItem = nil
+        menuBarIconImage = nil
+        loadingIndicator = nil
+    }
+
+    private func updateStatusItemVisibility() {
+        if showsMenuBarIcon() {
+            setupStatusItem()
+        } else {
+            removeStatusItem()
+        }
     }
 
     private func prepareSettingsStateItems() {
@@ -403,10 +532,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launchAtLoginItem = launchItem
 
         for mode in HotkeyMode.allCases {
-            let item = NSMenuItem(title: mode.title, action: #selector(selectHotkey(_:)), keyEquivalent: "")
-            item.target = self
+            let item = NSMenuItem(title: mode.title, action: nil, keyEquivalent: "")
             item.representedObject = mode.rawValue
-            item.isEnabled = true
+            item.isEnabled = false
             hotkeyMenuItems[mode] = item
         }
 
@@ -500,6 +628,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             setLaunchAtLogin: { [weak self] enabled in
                 self?.setLaunchAtLogin(enabled)
+            },
+            setShowsMenuBarIcon: { [weak self] enabled in
+                self?.setShowsMenuBarIcon(enabled)
             },
             setHotkey: { [weak self] rawValue in
                 self?.setHotkey(rawValue: rawValue)
@@ -610,9 +741,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         return SettingsSnapshot(
             launchAtLoginEnabled: isLaunchAtLoginEnabled(),
-            selectedHotkey: hotkeyMode.rawValue,
+            showsMenuBarIcon: showsMenuBarIcon(),
+            selectedHotkey: "fixed",
             selectedModelID: transcribeModel.rawValue,
-            selectedLanguageMode: languageMode.rawValue,
+            selectedLanguageMode: "fixed",
             installedModelCount: installedModelsCount(),
             totalModelCount: managedModels.count,
             updatesAvailable: modelUpdateAvailable,
@@ -637,6 +769,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "Последняя проверка: \(state.replacingOccurrences(of: "Обновление моделей: ", with: ""))"
         }
         return "Проверка обновлений еще не выполнялась"
+    }
+
+    private func showsMenuBarIcon() -> Bool {
+        VoiceInputShared.showsMenuBarIcon()
+    }
+
+    private func installOpenURLHandler() {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        guard
+            let rawURL = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+            let url = URL(string: rawURL),
+            url.scheme == VoiceInputShared.openURLScheme,
+            url.host == VoiceInputShared.openURLHost
+        else {
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        if !showsMenuBarIcon() {
+            openSettingsWindow()
+        }
+    }
+
+    private func reloadControlCenterStatus() {
+        if #available(macOS 26.0, *) {
+            ControlCenter.shared.reloadControls(ofKind: VoiceInputShared.controlKind)
+        }
     }
 
     private func sanitizedModelFileName(_ raw: String) -> String {
@@ -785,52 +952,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupHotkeyMonitors() {
         let flagsHandler: (NSEvent) -> Void = { [weak self] event in
-            self?.handleFlagsChanged(event.modifierFlags)
+            self?.handleFlagsChanged(event)
         }
 
         globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: flagsHandler)
         localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleFlagsChanged(event.modifierFlags)
+            self?.handleFlagsChanged(event)
             return event
         }
     }
 
-    private func handleFlagsChanged(_ flags: NSEvent.ModifierFlags) {
-        let hotkeyHeld = hotkeyMode.isPressed(flags: flags)
-        if hotkeyHeld && !isRecording {
-            startRecording()
+    private func handleFlagsChanged(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if Thread.isMainThread {
+            processFlagsChanged(flags: flags)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.processFlagsChanged(flags: flags)
+            }
+        }
+    }
+
+    private func processFlagsChanged(flags: NSEvent.ModifierFlags) {
+        handleDoubleControlLearningHotkey(flags: flags)
+
+        let hotkeyHeld = HotkeyMode.activeProfile(for: flags)
+        if let hotkeyHeld, !isRecording {
+            startRecording(using: hotkeyHeld)
             return
         }
-        if !hotkeyHeld && isRecording {
+        if isRecording {
+            guard let currentRecordingHotkeyMode else {
+                stopRecordingAndPaste()
+                return
+            }
+            if let hotkeyHeld, hotkeyHeld == currentRecordingHotkeyMode {
+                return
+            }
             stopRecordingAndPaste()
+            if let hotkeyHeld {
+                startRecording(using: hotkeyHeld)
+            }
         }
     }
 
-    private func loadHotkeyMode() {
-        let saved = UserDefaults.standard.string(forKey: hotkeyDefaultsKey) ?? HotkeyMode.shiftOption.rawValue
-        hotkeyMode = HotkeyMode(rawValue: saved) ?? .shiftOption
-    }
+    private func handleDoubleControlLearningHotkey(flags: NSEvent.ModifierFlags) {
+        let controlPressed = flags.contains(.control)
+        let onlyControlPressed = flags == [.control]
+        defer { wasControlPressed = controlPressed }
 
-    private func saveHotkeyMode() {
-        UserDefaults.standard.set(hotkeyMode.rawValue, forKey: hotkeyDefaultsKey)
+        guard controlPressed, !wasControlPressed, onlyControlPressed else {
+            return
+        }
+
+        let now = Date()
+        if let lastTap = lastControlTapAt, now.timeIntervalSince(lastTap) <= doubleControlInterval {
+            lastControlTapAt = nil
+            triggerLearningFromSelection()
+        } else {
+            lastControlTapAt = now
+        }
     }
 
     private func loadTranscribeModel() {
-        let saved = UserDefaults.standard.string(forKey: transcribeModelDefaultsKey) ?? TranscribeModel.mediumQ5.rawValue
-        transcribeModel = TranscribeModel.fromPersisted(saved) ?? .mediumQ5
+        let saved = UserDefaults.standard.string(forKey: transcribeModelDefaultsKey) ?? bundledBaselineModel.rawValue
+        transcribeModel = TranscribeModel.fromPersisted(saved) ?? bundledBaselineModel
     }
 
     private func saveTranscribeModel() {
         UserDefaults.standard.set(transcribeModel.rawValue, forKey: transcribeModelDefaultsKey)
-    }
-
-    private func loadLanguageMode() {
-        let saved = UserDefaults.standard.string(forKey: languageModeDefaultsKey) ?? LanguageMode.auto.rawValue
-        languageMode = LanguageMode(rawValue: saved) ?? .auto
-    }
-
-    private func saveLanguageMode() {
-        UserDefaults.standard.set(languageMode.rawValue, forKey: languageModeDefaultsKey)
     }
 
     private func loadUsageStats() {
@@ -1077,7 +1267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateHotkeyMenuState() {
         for (mode, item) in hotkeyMenuItems {
-            item.state = (mode == hotkeyMode) ? .on : .off
+            item.state = (mode == currentRecordingHotkeyMode) ? .on : .off
         }
         refreshSettingsWindow()
     }
@@ -1094,7 +1284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         var launchEnabled = false
-        if #available(macOS 13.0, *) {
+        if #available(macOS 26.0, *) {
             switch SMAppService.mainApp.status {
             case .enabled:
                 launchAtLoginItem.state = .on
@@ -1114,7 +1304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isLaunchAtLoginEnabled() -> Bool {
-        if #available(macOS 13.0, *) {
+        if #available(macOS 26.0, *) {
             switch SMAppService.mainApp.status {
             case .enabled, .requiresApproval:
                 return true
@@ -1146,37 +1336,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startRecording() {
+    private func startRecording(using mode: HotkeyMode) {
         ensureMicrophonePermission { [weak self] granted in
             guard let self else { return }
             guard granted else {
-                self.showStatus("Microphone permission denied")
+                self.showStatus(self.microphonePermissionDeniedStatusText)
                 return
             }
-            self.beginNativeRecording()
+            self.beginNativeRecording(using: mode)
         }
     }
 
-    private func beginNativeRecording() {
+    private func beginNativeRecording(using mode: HotkeyMode) {
         if isRecording {
             return
         }
-        appendRuntimeDiagnostic("ptt_begin_requested model=\(transcribeModel.fileName) lang=\(languageMode.rawValue)")
+        currentRecordingHotkeyMode = mode
+        appendRuntimeDiagnostic("ptt_begin_requested model=\(transcribeModel.fileName) hotkey=\(mode.rawValue) lang=\(mode.languageMode.rawValue)")
         isRecording = true
         recordingStartedAt = Date()
         lastPartialDraft = ""
         partialInferenceInFlight = false
         hudController.show()
-        showStatus("Recording...")
+        showStatus("Recording... \(mode.title)")
         do {
             try audioManager.start()
             appendRuntimeDiagnostic("audio_engine_started")
-            startPartialLoop()
+            startPartialLoop(using: mode)
         } catch {
             appendRuntimeDiagnostic("audio_engine_start_failed error=\(error.localizedDescription)")
+            hudController.hide(immediately: true)
             isRecording = false
+            currentRecordingHotkeyMode = nil
             recordingStartedAt = nil
-            showStatus("Audio engine error")
+            showStatus(audioEngineErrorStatusText)
         }
     }
 
@@ -1184,8 +1377,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !isRecording {
             return
         }
+        let recordingMode = currentRecordingHotkeyMode ?? .ruEnShiftFn
+        currentRecordingHotkeyMode = nil
         appendRuntimeDiagnostic("ptt_stop_requested")
         isRecording = false
+        hudController.hide()
         partialLoopTask?.cancel()
         partialLoopTask = nil
         let sessionDuration = max(0.0, Date().timeIntervalSince(recordingStartedAt ?? Date()))
@@ -1200,12 +1396,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: "",
                 reason: "too_short_before_transcribe"
             )
-            showStatus("No speech detected")
+            showStatus(noSpeechDetectedStatusText)
             clearTransientData(clearClipboard: false)
             return
         }
         showStatus("Transcribing...")
-        let finalSamples = audioManager.snapshotSpeechSamples()
+        let finalSamples = audioManager.snapshotSpeechSamples(maxSeconds: maxRecordingSeconds)
         appendRuntimeDiagnostic("final_samples_count=\(finalSamples.count)")
         if finalSamples.count < 320 {
             appendTranscriptionDiagnostic(
@@ -1214,7 +1410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: "",
                 reason: "empty_audio_after_vad"
             )
-            showStatus("No speech detected")
+            showStatus(noSpeechDetectedStatusText)
             clearTransientData(clearClipboard: false)
             return
         }
@@ -1223,33 +1419,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             do {
                 self.appendRuntimeDiagnostic("final_decode_started model_path=\(modelPath)")
-                let output = try await SpeechEngine.shared.transcribe(
-                    samples: finalSamples,
-                    modelPath: modelPath,
-                    languageMode: self.languageMode,
-                    pass: .final
-                )
-                var finalText = output.text
-                var finalLanguage = output.detectedLanguageCode
-                var finalConfidence = output.confidence
-                if finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    self.appendRuntimeDiagnostic("native_empty_try_cli_fallback")
+                var finalText = ""
+                var finalLanguage = recordingMode.languageMode.whisperLanguageCode
+                var finalConfidence: Float = 0.55
+
+                if self.useNativeDecodeHelper {
                     do {
-                        let fallbackText = try await self.transcribeViaScriptFallback(
+                        let helper = try await self.transcribeViaNativeDecodeHelper(
                             samples: finalSamples,
                             modelPath: modelPath,
-                            languageMode: self.languageMode
+                            languageMode: recordingMode.languageMode
                         )
+                        finalText = helper.text
+                        finalLanguage = helper.detectedLanguageCode
+                        finalConfidence = helper.confidence
+                        self.appendRuntimeDiagnostic("native_helper_done text_len=\(finalText.count) conf=\(String(format: "%.2f", finalConfidence)) lang=\(finalLanguage ?? "nil")")
+                    } catch {
+                        self.appendRuntimeDiagnostic("native_helper_failed error=\(error.localizedDescription)")
+                    }
+                } else if self.useNativeSpeechEngine {
+                    let output = try await SpeechEngine.shared.transcribe(
+                        samples: finalSamples,
+                        modelPath: modelPath,
+                        languageMode: recordingMode.languageMode,
+                        pass: .final
+                    )
+                    finalText = output.text
+                    finalLanguage = output.detectedLanguageCode
+                    finalConfidence = output.confidence
+                    self.appendRuntimeDiagnostic("native_decode_done text_len=\(finalText.count) conf=\(String(format: "%.2f", finalConfidence)) lang=\(finalLanguage ?? "nil")")
+                }
+
+                if allowShellFallback && (finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                    self.appendRuntimeDiagnostic("native_empty_try_cli_fallback")
+                    do {
+                        let fallback = try await self.transcribeViaScriptFallback(
+                            samples: finalSamples,
+                            modelPath: modelPath,
+                            languageMode: recordingMode.languageMode
+                        )
+                        let fallbackText = fallback.text
                         let fallbackTrimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
                         self.appendRuntimeDiagnostic("cli_fallback_done text_len=\(fallbackTrimmed.count)")
                         if !fallbackTrimmed.isEmpty {
                             finalText = fallbackTrimmed
-                            finalLanguage = self.languageMode.whisperLanguageCode ?? output.detectedLanguageCode
-                            finalConfidence = max(0.55, output.confidence)
+                            finalLanguage = fallback.languageCode ?? recordingMode.languageMode.whisperLanguageCode ?? finalLanguage
+                            finalConfidence = max(0.55, finalConfidence)
                         }
                     } catch {
                         self.appendRuntimeDiagnostic("cli_fallback_failed error=\(error.localizedDescription)")
                     }
+                } else if self.useNativeSpeechEngine, finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.appendRuntimeDiagnostic("native_empty_skip_cli_fallback")
                 }
                 let finalizedText = finalText
                 let finalizedLanguage = finalLanguage
@@ -1260,7 +1481,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         text: finalizedText,
                         duration: sessionDuration,
                         detectedLanguageCode: finalizedLanguage,
-                        confidence: finalizedConfidence
+                        confidence: finalizedConfidence,
+                        recordingMode: recordingMode
                     )
                 }
             } catch {
@@ -1272,7 +1494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         text: "",
                         reason: "stt_error_native"
                     )
-                    self.showStatus("STT error")
+                    self.showStatus(self.sttErrorStatusText)
                     self.showErrorAlert(title: "STT error", text: error.localizedDescription)
                     self.clearTransientData(clearClipboard: false)
                 }
@@ -1281,6 +1503,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startPartialLoop() {
+        guard let recordingMode = currentRecordingHotkeyMode else {
+            partialLoopTask?.cancel()
+            partialLoopTask = nil
+            return
+        }
+        startPartialLoop(using: recordingMode)
+    }
+
+    private func startPartialLoop(using mode: HotkeyMode) {
+        guard useNativeSpeechEngine else {
+            partialLoopTask?.cancel()
+            partialLoopTask = nil
+            return
+        }
         partialLoopTask?.cancel()
         let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
         partialLoopTask = Task { [weak self] in
@@ -1291,7 +1527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !self.isRecording { return }
                 if self.partialInferenceInFlight { continue }
                 self.partialInferenceInFlight = true
-                let samples = self.audioManager.snapshotSpeechSamples()
+                let samples = self.audioManager.snapshotSpeechSamples(maxSeconds: self.maxRecordingSeconds)
                 if samples.count < 1600 {
                     self.appendRuntimeDiagnostic("partial_skip_small_buffer samples=\(samples.count)")
                     self.partialInferenceInFlight = false
@@ -1301,7 +1537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let output = try await SpeechEngine.shared.transcribe(
                         samples: samples,
                         modelPath: modelPath,
-                        languageMode: self.languageMode,
+                        languageMode: mode.languageMode,
                         pass: .partial
                     )
                     await MainActor.run {
@@ -1321,18 +1557,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func handleFinalTranscription(text: String, duration: Double, detectedLanguageCode: String?, confidence: Float) {
+    private struct SanitizedInsertionResult {
+        let text: String
+        let removedUnsupportedContent: Bool
+    }
+
+    private struct FallbackTranscriptionResult {
+        let text: String
+        let languageCode: String?
+    }
+
+    private func handleFinalTranscription(
+        text: String,
+        duration: Double,
+        detectedLanguageCode: String?,
+        confidence: Float,
+        recordingMode: HotkeyMode
+    ) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalText = removeTrailingPeriod(trimmedText)
-        appendRuntimeDiagnostic("handle_final text_len=\(finalText.count)")
+        let noTrailingDot = removeTrailingPeriod(trimmedText)
+        let correctedText = correctionEngine.correct(noTrailingDot)
+        let grammarFixedText = normalizeCommonRussianConfusions(correctedText, for: recordingMode)
+        let sanitizedResult = sanitizeInsertionText(grammarFixedText, for: recordingMode)
+        let finalText = sanitizedResult.text
+        appendRuntimeDiagnostic("handle_final mode=\(recordingMode.rawValue) text_len=\(finalText.count)")
         guard !finalText.isEmpty else {
             appendTranscriptionDiagnostic(
                 status: "rejected",
                 durationSeconds: duration,
                 text: "",
-                reason: "empty_output"
+                reason: sanitizedResult.removedUnsupportedContent ? "unsupported_language_only" : "empty_output"
             )
-            showStatus("No speech detected")
+            if sanitizedResult.removedUnsupportedContent {
+                appendRuntimeDiagnostic("unsupported_language_rejected")
+                showUnsupportedLanguageFeedback("Неподдерживаемый язык: вставка пропущена")
+            } else {
+                showStatus(noSpeechDetectedStatusText)
+            }
             clearTransientData(clearClipboard: false)
             return
         }
@@ -1359,13 +1620,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reason: "\(languagePart),conf=\(String(format: "%.2f", confidence))"
         )
         recordUsage(durationSeconds: duration, text: finalText)
+        lastInsertedTranscript = finalText
+        lastInsertedAt = Date()
 
         let pasted = pasteText(finalText)
         if pasted {
-            showStatus("Pasted")
+            if sanitizedResult.removedUnsupportedContent {
+                appendRuntimeDiagnostic("unsupported_language_trimmed")
+                showUnsupportedLanguageFeedback("Неподдерживаемые символы удалены")
+            } else {
+                showStatus(pastedStatusText)
+            }
             clearTransientData(clearClipboard: true)
         } else {
-            showStatus("Paste blocked, text copied")
+            showStatus(pasteBlockedStatusText)
             clearTransientData(clearClipboard: false)
             showErrorAlert(title: "Auto-paste blocked", text: "Text is copied to clipboard. Grant Accessibility for Voice Input to allow auto-paste.")
         }
@@ -1375,6 +1643,176 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasSuffix(".") else { return trimmed }
         return String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizeCommonRussianConfusions(_ text: String, for profile: HotkeyMode) -> String {
+        switch profile {
+        case .ruEnShiftFn:
+            return normalizeRussianParticleConfusions(in: text)
+        case .hebrewShiftControlFn:
+            return text
+        }
+    }
+
+    private func normalizeRussianParticleConfusions(in text: String) -> String {
+        let keepMeWords: Set<String> = [
+            "не", "ни",
+            "надо", "нужно", "нельзя", "можно", "пора", "жаль", "кажется", "казалось",
+            "нравится", "хочется", "приятно", "интересно", "важно", "плохо", "хорошо",
+            "легко", "трудно", "сложно", "обидно", "стыдно", "страшно", "необходимо",
+            "слышно", "видно", "ясно", "понятно",
+            "буду", "будешь", "будет", "будем", "будете", "будут", "было", "была", "быть"
+        ]
+
+        guard let regex = try? NSRegularExpression(pattern: #"(?i)(?<![\p{L}\p{N}_])(мне)(?![\p{L}\p{N}_])"#) else {
+            return text
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else {
+            return text
+        }
+
+        let mutable = NSMutableString(string: text)
+        for match in matches.reversed() {
+            let wordRange = match.range(at: 1)
+            let nextWord = firstWord(after: wordRange.upperBound, in: nsText as String)
+            guard !keepMeWords.contains(nextWord.lowercased()) else {
+                continue
+            }
+            let replacement = preserveCase(of: nsText.substring(with: wordRange), with: "не")
+            mutable.replaceCharacters(in: wordRange, with: replacement)
+        }
+        return mutable as String
+    }
+
+    private func firstWord(after location: Int, in text: String) -> String {
+        let nsText = text as NSString
+        guard location < nsText.length else { return "" }
+        let suffix = nsText.substring(from: location)
+        guard let match = suffix.range(of: #"[A-Za-zА-Яа-яЁё]+"#, options: .regularExpression) else {
+            return ""
+        }
+        return String(suffix[match])
+    }
+
+    private func preserveCase(of source: String, with replacement: String) -> String {
+        guard let first = source.first else {
+            return replacement
+        }
+        return first.isUppercase ? replacement.capitalized : replacement
+    }
+
+    private func sanitizeInsertionText(_ text: String, for profile: HotkeyMode) -> SanitizedInsertionResult {
+        let allowedPunctuation = CharacterSet(charactersIn: " \t\r\n.,!?;:'\"()[]{}<>«»„“”`~@#$%^&*-_=+/\\|0123456789")
+        let latin = CharacterSet(charactersIn: "A"..."Z").union(CharacterSet(charactersIn: "a"..."z"))
+        let cyrillic = CharacterSet(charactersIn: "\u{0400}"..."\u{04FF}")
+        let hebrew = CharacterSet(charactersIn: "\u{0590}"..."\u{05FF}")
+        let allowed: CharacterSet
+        switch profile {
+        case .ruEnShiftFn:
+            allowed = allowedPunctuation.union(latin).union(cyrillic)
+        case .hebrewShiftControlFn:
+            allowed = allowedPunctuation.union(hebrew)
+        }
+
+        var removedUnsupportedContent = false
+        let scalars = text.unicodeScalars.map { scalar -> UnicodeScalar in
+            if allowed.contains(scalar) {
+                return scalar
+            }
+            if !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                removedUnsupportedContent = true
+            }
+            return " "
+        }
+        let collapsed = String(String.UnicodeScalarView(scalars))
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return SanitizedInsertionResult(text: collapsed, removedUnsupportedContent: removedUnsupportedContent)
+    }
+
+    private func showUnsupportedLanguageFeedback(_ text: String) {
+        showStatus(text)
+        learningHUDController.show(text)
+    }
+
+    private func fallbackLanguageCode(for mode: LanguageMode) -> String {
+        switch mode {
+        case .auto, .russianEnglish:
+            return "auto"
+        case .russian:
+            return "ru"
+        case .english:
+            return "en"
+        case .hebrew:
+            return "he"
+        }
+    }
+
+    private func triggerLearningFromSelection() {
+        guard !isRecording else { return }
+        guard let lastInsertedAt, Date().timeIntervalSince(lastInsertedAt) <= learningSourceMaxAge else {
+            showLearningFeedback("Learning: no recent dictated text")
+            return
+        }
+        guard !lastInsertedTranscript.isEmpty else {
+            showLearningFeedback("Learning: no source text")
+            return
+        }
+        guard let correctedSelection = captureSelectedTextForLearning(), !correctedSelection.isEmpty else {
+            showLearningFeedback("Learning: select corrected text")
+            return
+        }
+
+        let learnedCount = correctionEngine.learn(fromOriginal: lastInsertedTranscript, corrected: correctedSelection)
+        if learnedCount > 0 {
+            appendRuntimeDiagnostic("learning_saved count=\(learnedCount)")
+            showLearningFeedback("Learning: saved \(learnedCount) correction(s)")
+        } else {
+            showLearningFeedback("Learning: no diff detected")
+        }
+    }
+
+    private func showLearningFeedback(_ text: String) {
+        showStatus(text)
+        learningHUDController.show(text)
+    }
+
+    private func captureSelectedTextForLearning() -> String? {
+        guard AXIsProcessTrusted() else {
+            return nil
+        }
+
+        let board = NSPasteboard.general
+        let snapshot = snapshotClipboard(board)
+        let baselineChangeCount = board.changeCount
+
+        sendCommandShortcut(keyCode: 8) // Cmd+C
+
+        let deadline = Date().addingTimeInterval(0.22)
+        while Date() < deadline, board.changeCount == baselineChangeCount {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        guard board.changeCount != baselineChangeCount else {
+            return nil
+        }
+
+        let selectedText = board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        restoreClipboardSnapshot(snapshot, to: board)
+        return selectedText
+    }
+
+    private func sendCommandShortcut(keyCode: CGKeyCode) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        cmdDown?.flags = .maskCommand
+        let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        cmdUp?.flags = .maskCommand
+        cmdDown?.post(tap: .cghidEventTap)
+        cmdUp?.post(tap: .cghidEventTap)
     }
 
     private func pasteText(_ text: String) -> Bool {
@@ -1387,14 +1825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         board.setString(text, forType: .string)
         clipboardRestoreState = ClipboardRestoreState(snapshot: snapshot, expectedChangeCount: board.changeCount, injectedText: text)
 
-        let source = CGEventSource(stateID: .combinedSessionState)
-        let vKey: CGKeyCode = 9
-        let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true)
-        cmdDown?.flags = .maskCommand
-        let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
-        cmdUp?.flags = .maskCommand
-        cmdDown?.post(tap: .cghidEventTap)
-        cmdUp?.post(tap: .cghidEventTap)
+        sendCommandShortcut(keyCode: 9) // Cmd+V
         return true
     }
 
@@ -1442,6 +1873,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         board.writeObjects(restoredItems)
     }
 
+    private func restoreClipboardSnapshot(_ snapshot: ClipboardSnapshot, to board: NSPasteboard) {
+        board.clearContents()
+        guard !snapshot.items.isEmpty else { return }
+        let restoredItems: [NSPasteboardItem] = snapshot.items.map { saved in
+            let item = NSPasteboardItem()
+            for (typeRaw, data) in saved {
+                item.setData(data, forType: NSPasteboard.PasteboardType(typeRaw))
+            }
+            return item
+        }
+        board.writeObjects(restoredItems)
+    }
+
     private func clearTransientData(clearClipboard: Bool) {
         let runtimeDir = runtimeDirectoryPath
         try? FileManager.default.removeItem(atPath: "\(runtimeDir)/ptt_input.txt")
@@ -1460,6 +1904,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem?.button {
             button.toolTip = "Voice Input - \(text)"
         }
+    }
+
+    private var readyStatusText: String {
+        "PTT ready: \(fixedHotkeyDescription), model: \(transcribeModel.title)"
+    }
+
+    private var fixedHotkeyStatusText: String {
+        "Hotkeys are fixed: \(fixedHotkeyDescription)"
+    }
+
+    private var fixedLanguageProfileStatusText: String {
+        "Language profiles are fixed: RU/EN and Hebrew"
     }
 
     private func beginActivity() {
@@ -1525,7 +1981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshSettingsWindow()
         beginActivity()
         setModelProgress(0, detail: "старт")
-        showStatus("Updating models...")
+        showStatus(modelUpdateStartingStatusText)
 
         guard let scriptPath = transcribeScriptPath else {
             modelUpdateInProgress = false
@@ -1533,7 +1989,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refreshSettingsWindow()
             clearModelProgress()
             endActivity()
-            showStatus("Model update failed")
+            showStatus(modelUpdateFailedStatusText)
             showErrorAlert(title: "Model update failed", text: "Update script not found.")
             completion?(self.currentSettingsSnapshot())
             return
@@ -1554,7 +2010,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.refreshSettingsWindow()
                 self.clearModelProgress()
                 self.endActivity()
-                self.showStatus("Model update failed")
+                self.showStatus(self.modelUpdateFailedStatusText)
                 let alert = NSAlert()
                 alert.messageText = "Model update failed"
                 alert.informativeText = firstOutput.isEmpty ? "Check internet connection and try again." : firstOutput
@@ -1577,7 +2033,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.refreshSettingsWindow()
                     self.clearModelProgress()
                     self.endActivity()
-                    self.showStatus("Model update failed")
+                    self.showStatus(self.modelUpdateFailedStatusText)
                     let alert = NSAlert()
                     alert.messageText = "Model update failed"
                     alert.informativeText = secondOutput.isEmpty ? "Check internet connection and try again." : secondOutput
@@ -1600,7 +2056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.modelUpdateItem?.isEnabled = false
                         self.refreshSettingsWindow()
                         self.clearModelProgress()
-                        self.showStatus("Model update failed")
+                        self.showStatus(self.modelUpdateFailedStatusText)
                         let alert = NSAlert()
                         alert.messageText = "Model update failed"
                         alert.informativeText = thirdOutput.isEmpty ? "Check internet connection and try again." : thirdOutput
@@ -1613,7 +2069,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.setModelProgress(100, detail: "large-v3-turbo-q5_0")
                     self.modelUpdateItem?.isEnabled = false
                     self.refreshSettingsWindow()
-                    self.showStatus("Models updated")
+                    self.showStatus(self.modelUpdateCompletedStatusText)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                         self?.clearModelProgress()
                         self?.checkForUpdates(completion: completion)
@@ -1623,7 +2079,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func runShell(command: String, environment: [String: String]? = nil, completion: @escaping (Int32, String) -> Void) {
+    private final class ShellCompletionBox: @unchecked Sendable {
+        let handler: (Int32, String) -> Void
+
+        init(handler: @escaping (Int32, String) -> Void) {
+            self.handler = handler
+        }
+    }
+
+    private func runShell(
+        command: String,
+        environment: [String: String]? = nil,
+        completion: @escaping (Int32, String) -> Void
+    ) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", command]
@@ -1636,12 +2104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let completionBox = ShellCompletionBox(handler: completion)
         process.terminationHandler = { proc in
             let out = stdout.fileHandleForReading.readDataToEndOfFile()
             let err = stderr.fileHandleForReading.readDataToEndOfFile()
             let output = (String(data: out, encoding: .utf8) ?? "") + (String(data: err, encoding: .utf8) ?? "")
             DispatchQueue.main.async {
-                completion(proc.terminationStatus, output)
+                completionBox.handler(proc.terminationStatus, output)
             }
         }
         do {
@@ -1659,35 +2128,139 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func transcribeViaScriptFallback(samples: [Float], modelPath: String, languageMode: LanguageMode) async throws -> String {
+    private func transcribeViaScriptFallback(samples: [Float], modelPath: String, languageMode: LanguageMode) async throws -> FallbackTranscriptionResult {
         guard let scriptPath = transcribeScriptPath else {
             throw NSError(domain: "VoiceInput", code: 3101, userInfo: [NSLocalizedDescriptionKey: "Fallback script not found"])
         }
         guard !samples.isEmpty else {
-            return ""
+            return FallbackTranscriptionResult(text: "", languageCode: nil)
         }
 
         try FileManager.default.createDirectory(atPath: runtimeDirectoryPath, withIntermediateDirectories: true)
-        let wavPath = recordingPath
+        let wavPath = "\(runtimeDirectoryPath)/fallback-\(UUID().uuidString).wav"
         try writeSamplesAsWav(samples, to: wavPath)
+        appendRuntimeDiagnostic("cli_fallback_wav_written path=\(wavPath) exists=\(FileManager.default.fileExists(atPath: wavPath))")
+        defer {
+            try? FileManager.default.removeItem(atPath: wavPath)
+        }
 
-        let env: [String: String] = [
+        let baseEnv: [String: String] = [
             "WHISPER_MODEL": modelPath,
             "WHISPER_MODEL_DIR": modelsDirectoryPath,
             "WHISPER_APP_SUPPORT_DIR": appSupportDirectoryPath,
             "WHISPER_RUNTIME_DIR": runtimeDirectoryPath,
-            "WHISPER_LANGUAGE": languageMode.whisperLanguageCode ?? "auto",
             "WHISPER_THREADS": "\(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))",
-            "WHISPER_BEAM_SIZE": "1",
-            "WHISPER_BEST_OF": "1",
             "WHISPER_GPU_FALLBACK": "1"
         ]
-        let command = "\(shellQuote(scriptPath)) transcribe \(shellQuote(wavPath))"
+        var command = "\(shellQuote(scriptPath)) transcribe \(shellQuote(wavPath))"
+        if let bundledWhisperBinaryPath {
+            command = "WHISPER_BIN=\(shellQuote(bundledWhisperBinaryPath)) \(command)"
+        }
+        var env = baseEnv
+        if let backendPath = cachedBundledGGMLBackendPluginPath {
+            env["GGML_BACKEND_PATH"] = backendPath
+        }
+        let languageCode = fallbackLanguageCode(for: languageMode)
+        let effectiveLanguageCode = languageMode == .hebrew ? "auto" : languageCode
+        env["WHISPER_LANGUAGE"] = languageCode
+        if let prompt = languageMode.whisperInitialPrompt {
+            env["WHISPER_PROMPT"] = prompt
+        }
+        if languageMode == .hebrew {
+            env["WHISPER_LANGUAGE"] = "auto"
+            env["WHISPER_BEAM_SIZE"] = "5"
+            env["WHISPER_BEST_OF"] = "5"
+        }
         let (code, output) = await runShellAsync(command: command, environment: env)
         if code != 0 {
             throw NSError(domain: "VoiceInput", code: 3102, userInfo: [NSLocalizedDescriptionKey: output.isEmpty ? "Fallback transcription failed" : output])
         }
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return FallbackTranscriptionResult(
+            text: output.trimmingCharacters(in: .whitespacesAndNewlines),
+            languageCode: languageMode == .auto || languageMode == .russianEnglish ? nil : effectiveLanguageCode
+        )
+    }
+
+    private func transcribeViaNativeDecodeHelper(
+        samples: [Float],
+        modelPath: String,
+        languageMode: LanguageMode
+    ) async throws -> TranscriptionOutput {
+        guard let executableURL = Bundle.main.executableURL else {
+            throw NSError(domain: "VoiceInput", code: 3201, userInfo: [NSLocalizedDescriptionKey: "App executable not found"])
+        }
+        guard !samples.isEmpty else {
+            return TranscriptionOutput(text: "", detectedLanguageCode: nil, confidence: 0)
+        }
+
+        try FileManager.default.createDirectory(atPath: runtimeDirectoryPath, withIntermediateDirectories: true)
+        let wavPath = "\(runtimeDirectoryPath)/native-\(UUID().uuidString).wav"
+        try writeSamplesAsWav(samples, to: wavPath)
+        defer {
+            try? FileManager.default.removeItem(atPath: wavPath)
+        }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = [
+            "--voice-input-native-helper",
+            "--audio-path", wavPath,
+            "--model-path", modelPath,
+            "--language-mode", languageMode.rawValue,
+            "--pass", "final",
+            "--quality-mode", UserDefaults.standard.string(forKey: "qualityMode") ?? QualityMode.balanced.rawValue
+        ]
+
+        var environment = ProcessInfo.processInfo.environment
+        if let backendPath = cachedBundledGGMLBackendPluginPath {
+            environment["GGML_BACKEND_PATH"] = backendPath
+        }
+        process.environment = environment
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { proc in
+                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let output = (String(data: outData, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let errorOutput = (String(data: errData, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if proc.terminationStatus != 0 {
+                    continuation.resume(throwing: NSError(
+                        domain: "VoiceInput",
+                        code: 3202,
+                        userInfo: [NSLocalizedDescriptionKey: errorOutput.isEmpty ? output : errorOutput]
+                    ))
+                    return
+                }
+
+                guard let data = output.data(using: .utf8) else {
+                    continuation.resume(throwing: NSError(domain: "VoiceInput", code: 3203, userInfo: [NSLocalizedDescriptionKey: "Native helper returned no data"]))
+                    return
+                }
+
+                do {
+                    let decoded = try JSONDecoder().decode(TranscriptionOutput.self, from: data)
+                    continuation.resume(returning: decoded)
+                } catch {
+                    continuation.resume(throwing: NSError(
+                        domain: "VoiceInput",
+                        code: 3204,
+                        userInfo: [NSLocalizedDescriptionKey: error.localizedDescription.isEmpty ? "Failed to decode native helper output" : error.localizedDescription]
+                    ))
+                }
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
     private func writeSamplesAsWav(_ samples: [Float], to path: String) throws {
@@ -1905,26 +2478,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return result
     }
 
-    @objc private func selectHotkey(_ sender: NSMenuItem) {
-        guard
-            let raw = sender.representedObject as? String,
-            HotkeyMode(rawValue: raw) != nil
-        else {
-            return
-        }
-        setHotkey(rawValue: raw)
-    }
-
-    private func setHotkey(rawValue: String) {
-        guard let mode = HotkeyMode(rawValue: rawValue) else {
-            return
-        }
-        hotkeyMode = mode
-        saveHotkeyMode()
-        updateHotkeyMenuState()
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
-    }
-
     @objc private func selectTranscribeModel(_ sender: NSMenuItem) {
         guard
             let raw = sender.representedObject as? String,
@@ -1942,21 +2495,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeModel = model
         saveTranscribeModel()
         updateTranscribeModelMenuState()
-        let modelPath = "\(modelsDirectoryPath)/\(transcribeModel.fileName)"
-        Task {
-            try? await SpeechEngine.shared.warmup(modelPath: modelPath)
-        }
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title)")
+        showStatus(readyStatusText)
     }
 
-    private func setLanguageMode(rawValue: String) {
-        guard let mode = LanguageMode(rawValue: rawValue) else {
-            return
-        }
-        languageMode = mode
-        saveLanguageMode()
+    private func setHotkey(rawValue _: String) {
+        showStatus(fixedHotkeyStatusText)
         refreshSettingsWindow()
-        showStatus("PTT ready: \(hotkeyMode.title), model: \(transcribeModel.title), lang: \(mode.title)")
+    }
+
+    private func setLanguageMode(rawValue _: String) {
+        showStatus(fixedLanguageProfileStatusText)
+        refreshSettingsWindow()
+    }
+
+    private func setShowsMenuBarIcon(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: VoiceInputShared.showsMenuBarIconDefaultsKey)
+        updateStatusItemVisibility()
+        refreshSettingsWindow()
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -1964,8 +2519,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
-        if #unavailable(macOS 13.0) {
-            showStatus("Launch at Login unsupported on this macOS")
+        if #unavailable(macOS 26.0) {
+            showStatus(launchAtLoginUnsupportedStatusText)
             UserDefaults.standard.set(false, forKey: launchAtLoginDefaultsKey)
             refreshSettingsWindow()
             return
@@ -1975,13 +2530,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let currentlyEnabled = isLaunchAtLoginEnabled()
             if currentlyEnabled && !enabled {
                 try SMAppService.mainApp.unregister()
-                showStatus("Launch at Login disabled")
+                showStatus(launchAtLoginDisabledStatusText)
             } else if !currentlyEnabled && enabled {
                 try SMAppService.mainApp.register()
-                showStatus("Launch at Login enabled")
+                showStatus(launchAtLoginEnabledStatusText)
             }
         } catch {
-            showStatus("Launch at Login error")
+            showStatus(launchAtLoginErrorStatusText)
         }
         updateLaunchAtLoginMenuState()
     }
@@ -1989,6 +2544,188 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
+}
+
+private enum NativeTranscriptionHelper {
+    private struct Request {
+        let audioPath: String
+        let modelPath: String
+        let languageMode: LanguageMode
+        let pass: TranscriptionPass
+        let qualityModeRaw: String
+    }
+
+    static func handleIfNeeded() -> Bool {
+        guard CommandLine.arguments.contains("--voice-input-native-helper") else {
+            return false
+        }
+        run()
+        return true
+    }
+
+    private static func run() {
+        do {
+            let request = try parseRequest()
+            configureBackendPath()
+            UserDefaults.standard.set(request.qualityModeRaw, forKey: "qualityMode")
+            let samples = try readSamples(from: request.audioPath)
+            let semaphore = DispatchSemaphore(value: 0)
+            var result: TranscriptionOutput?
+            var failure: Error?
+
+            Task {
+                do {
+                    result = try await SpeechEngine.shared.transcribe(
+                        samples: samples,
+                        modelPath: request.modelPath,
+                        languageMode: request.languageMode,
+                        pass: request.pass
+                    )
+                } catch {
+                    failure = error
+                }
+                semaphore.signal()
+            }
+
+            let waitResult = semaphore.wait(timeout: .now() + 90.0)
+            if waitResult == .timedOut {
+                fputs("native helper timed out\n", stderr)
+                exit(124)
+            }
+            if let failure {
+                fputs("\(failure.localizedDescription)\n", stderr)
+                exit(1)
+            }
+            guard let result else {
+                fputs("native helper produced no result\n", stderr)
+                exit(1)
+            }
+
+            let data = try JSONEncoder().encode(result)
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data([0x0A]))
+            exit(0)
+        } catch {
+            fputs("\(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+
+    private static func parseRequest() throws -> Request {
+        let args = CommandLine.arguments
+        func value(after flag: String) -> String? {
+            guard let index = args.firstIndex(of: flag), index + 1 < args.count else {
+                return nil
+            }
+            return args[index + 1]
+        }
+
+        guard
+            let audioPath = value(after: "--audio-path"),
+            let modelPath = value(after: "--model-path"),
+            let languageRaw = value(after: "--language-mode"),
+            let languageMode = LanguageMode(rawValue: languageRaw),
+            let passRaw = value(after: "--pass"),
+            let qualityModeRaw = value(after: "--quality-mode")
+        else {
+            throw NSError(domain: "VoiceInput", code: 3301, userInfo: [NSLocalizedDescriptionKey: "Missing native helper arguments"])
+        }
+
+        let pass: TranscriptionPass
+        switch passRaw {
+        case "partial":
+            pass = .partial
+        case "final":
+            pass = .final
+        default:
+            throw NSError(domain: "VoiceInput", code: 3302, userInfo: [NSLocalizedDescriptionKey: "Invalid helper pass"])
+        }
+
+        return Request(
+            audioPath: audioPath,
+            modelPath: modelPath,
+            languageMode: languageMode,
+            pass: pass,
+            qualityModeRaw: qualityModeRaw
+        )
+    }
+
+    private static func configureBackendPath() {
+        guard let frameworksURL = Bundle.main.privateFrameworksURL else {
+            return
+        }
+        let candidates = [
+            "ggml-backends/libggml-cpu-apple_m2_m3.so",
+            "ggml-backends/libggml-cpu-apple_m4.so",
+            "ggml-backends/libggml-cpu-apple_m1.so",
+            "ggml-backends/libggml-metal.so"
+        ]
+        for candidate in candidates {
+            let url = frameworksURL.appendingPathComponent(candidate)
+            if FileManager.default.fileExists(atPath: url.path) {
+                setenv("GGML_BACKEND_PATH", url.path, 1)
+                return
+            }
+        }
+    }
+
+    private static func readSamples(from path: String) throws -> [Float] {
+        let url = URL(fileURLWithPath: path)
+        let file = try AVAudioFile(forReading: url)
+        let frameCount = AVAudioFrameCount(file.length)
+        guard frameCount > 0 else {
+            return []
+        }
+
+        let sourceFormat = file.processingFormat
+        guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount) else {
+            throw NSError(domain: "VoiceInput", code: 3303, userInfo: [NSLocalizedDescriptionKey: "Unable to allocate audio buffer"])
+        }
+        try file.read(into: sourceBuffer)
+
+        let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sourceFormat.sampleRate,
+            channels: sourceFormat.channelCount,
+            interleaved: false
+        )
+
+        if sourceFormat.commonFormat == .pcmFormatFloat32, let floatData = sourceBuffer.floatChannelData?.pointee {
+            let samples = Array(UnsafeBufferPointer(start: floatData, count: Int(sourceBuffer.frameLength)))
+            return samples
+        }
+
+        if let targetFormat, let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) {
+            guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCount) else {
+                throw NSError(domain: "VoiceInput", code: 3303, userInfo: [NSLocalizedDescriptionKey: "Unable to allocate conversion buffer"])
+            }
+            var convertError: NSError?
+            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                outStatus.pointee = .haveData
+                return sourceBuffer
+            }
+            converter.convert(to: converted, error: &convertError, withInputFrom: inputBlock)
+            if let convertError {
+                throw convertError
+            }
+            if let floatData = converted.floatChannelData?.pointee {
+                let samples = Array(UnsafeBufferPointer(start: floatData, count: Int(converted.frameLength)))
+                return samples
+            }
+        }
+
+        if let intData = sourceBuffer.int16ChannelData?.pointee {
+            let count = Int(sourceBuffer.frameLength)
+            return (0..<count).map { index in
+                Float(intData[index]) / Float(Int16.max)
+            }
+        }
+        throw NSError(domain: "VoiceInput", code: 3304, userInfo: [NSLocalizedDescriptionKey: "Unsupported audio buffer format"])
+    }
+}
+
+if NativeTranscriptionHelper.handleIfNeeded() {
+    exit(0)
 }
 
 let app = NSApplication.shared

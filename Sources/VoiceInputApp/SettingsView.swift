@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -48,6 +49,7 @@ struct SettingsStats: Equatable {
 
 struct SettingsSnapshot: Equatable {
     var launchAtLoginEnabled: Bool
+    var showsMenuBarIcon: Bool
     var selectedHotkey: String
     var selectedModelID: String
     var selectedLanguageMode: String
@@ -64,9 +66,10 @@ struct SettingsSnapshot: Equatable {
 
     static let mock = SettingsSnapshot(
         launchAtLoginEnabled: true,
-        selectedHotkey: HotkeyMode.shiftOption.rawValue,
+        showsMenuBarIcon: true,
+        selectedHotkey: "fixed",
         selectedModelID: TranscribeModel.mediumQ5.rawValue,
-        selectedLanguageMode: LanguageMode.auto.rawValue,
+        selectedLanguageMode: "fixed",
         installedModelCount: 3,
         totalModelCount: 3,
         updatesAvailable: false,
@@ -83,6 +86,7 @@ struct SettingsSnapshot: Equatable {
 struct SettingsActions {
     var snapshot: () -> SettingsSnapshot
     var setLaunchAtLogin: (Bool) -> Void
+    var setShowsMenuBarIcon: (Bool) -> Void
     var setHotkey: (String) -> Void
     var setModel: (String) -> Void
     var setLanguageMode: (String) -> Void
@@ -93,19 +97,22 @@ struct SettingsActions {
     var openModelsFolder: () -> Void
     var resetStats: () -> Void
 
-    static let mock = SettingsActions(
-        snapshot: { .mock },
-        setLaunchAtLogin: { _ in },
-        setHotkey: { _ in },
-        setModel: { _ in },
-        setLanguageMode: { _ in },
-        checkUpdates: { completion in completion(.mock) },
-        updateModels: { completion in completion(.mock) },
-        addModelFromURL: { _, completion in completion(.mock) },
-        deleteModel: { _, completion in completion(.mock) },
-        openModelsFolder: {},
-        resetStats: {}
-    )
+    static var mock: SettingsActions {
+        SettingsActions(
+            snapshot: { .mock },
+            setLaunchAtLogin: { _ in },
+            setShowsMenuBarIcon: { _ in },
+            setHotkey: { _ in },
+            setModel: { _ in },
+            setLanguageMode: { _ in },
+            checkUpdates: { completion in completion(.mock) },
+            updateModels: { completion in completion(.mock) },
+            addModelFromURL: { _, completion in completion(.mock) },
+            deleteModel: { _, completion in completion(.mock) },
+            openModelsFolder: {},
+            resetStats: {}
+        )
+    }
 }
 
 final class SettingsViewModel: ObservableObject {
@@ -130,6 +137,11 @@ final class SettingsViewModel: ObservableObject {
 
     func applyLaunchAtLogin(_ enabled: Bool) {
         actions.setLaunchAtLogin(enabled)
+        reload()
+    }
+
+    func applyShowsMenuBarIcon(_ enabled: Bool) {
+        actions.setShowsMenuBarIcon(enabled)
         reload()
     }
 
@@ -188,15 +200,15 @@ struct SettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     @AppStorage("voice_input_launch_at_login") private var launchAtLogin = false
-    @AppStorage("voice_input_hotkey_mode") private var hotkey = HotkeyMode.shiftOption.rawValue
+    @AppStorage("voice_input_show_menu_bar_icon") private var showsMenuBarIcon = true
     @AppStorage("voice_input_transcribe_model") private var selectedModelID = TranscribeModel.mediumQ5.rawValue
-    @AppStorage("voice_input_language_mode") private var languageMode = LanguageMode.auto.rawValue
     @AppStorage("qualityMode") private var qualityMode = QualityMode.balanced.rawValue
+    @AppStorage("voice_input_max_recording_seconds") private var maxRecordingSeconds = 20.0
 
     @State private var selectedTab: SettingsTab? = .general
     @StateObject private var modelManager: ModelManager
 
-    private let pickerWidth: CGFloat = 280
+    private let recordingLimitOptions: [Double] = [10, 15, 20, 30, 45, 60]
 
     init(viewModel: SettingsViewModel) {
         self.viewModel = viewModel
@@ -216,6 +228,9 @@ struct SettingsView: View {
             detailView
         }
         .frame(minWidth: 860, minHeight: 680)
+        .safeAreaInset(edge: .bottom) {
+            settingsFooter
+        }
         .onAppear {
             viewModel.reload()
             syncStorageFromSnapshot()
@@ -234,148 +249,122 @@ struct SettingsView: View {
         case .general:
             generalTab
         case .models:
-            modelsTab
+            ModelsView(manager: modelManager)
         case .stats:
-            statsTab
+            StatisticsView(stats: viewModel.snapshot.stats) {
+                viewModel.resetStats()
+            }
         }
     }
 
     private var generalTab: some View {
-        Form {
-            Section("Общие") {
-                Toggle("Запуск при входе", isOn: Binding(
-                    get: { launchAtLogin },
-                    set: { newValue in
-                        launchAtLogin = newValue
-                        viewModel.applyLaunchAtLogin(newValue)
-                    }
-                ))
-                .padding(.vertical, 2)
-
-                LabeledContent("Горячая клавиша") {
-                    Picker("", selection: Binding(
-                        get: { hotkey },
-                        set: { newValue in
-                            hotkey = newValue
-                            viewModel.applyHotkey(newValue)
-                        }
-                    )) {
-                        ForEach(viewModel.hotkeyOptions, id: \.rawValue) { mode in
-                            Text(mode.title).tag(mode.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .controlSize(.large)
-                    .frame(width: pickerWidth)
-                }
-                .padding(.vertical, 2)
-
-                LabeledContent("Язык") {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Picker("", selection: Binding(
-                            get: { languageMode },
+        ScrollView {
+            VStack(alignment: .leading, spacing: VISpacing.xl) {
+                SettingsSection("Общие") {
+                    SettingsToggleRow(
+                        title: "Запуск при входе",
+                        value: Binding(
+                            get: { launchAtLogin },
                             set: { newValue in
-                                languageMode = newValue
-                                viewModel.applyLanguageMode(newValue)
+                                launchAtLogin = newValue
+                                viewModel.applyLaunchAtLogin(newValue)
                             }
-                        )) {
-                            ForEach(LanguageMode.allCases, id: \.rawValue) { mode in
-                                Text(mode.title).tag(mode.rawValue)
+                        )
+                    )
+
+                    SettingsToggleRow(
+                        title: "Показывать в menu bar",
+                        value: Binding(
+                            get: { showsMenuBarIcon },
+                            set: { newValue in
+                                showsMenuBarIcon = newValue
+                                viewModel.applyShowsMenuBarIcon(newValue)
                             }
-                        }
-                        .labelsHidden()
-                        .controlSize(.large)
-                        .frame(width: pickerWidth)
+                        )
+                    )
 
-                        Text("Определяет язык распознавания")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 2)
-
-                LabeledContent("Режим качества") {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Picker("", selection: $qualityMode) {
-                            Text("Fast").tag(QualityMode.fast.rawValue)
-                            Text("Balanced").tag(QualityMode.balanced.rawValue)
-                            Text("High").tag(QualityMode.high.rawValue)
-                        }
-                        .labelsHidden()
-                        .controlSize(.large)
-                        .frame(width: pickerWidth)
-
-                        Text("Влияет на скорость и точность финального распознавания")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-
-            Section("Модель") {
-                LabeledContent("Активная модель") {
-                    HStack(spacing: 10) {
-                        Text(activeModelTitle)
-                        if let modelSizeBadgeText {
-                            Text(modelSizeBadgeText)
-                                .font(.caption)
+                    SettingsRow("Горячие клавиши") {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("Shift+Fn → RU/EN")
+                                .font(VITypography.rowValue)
                                 .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Capsule().fill(.quaternary))
+                            Text("Shift+Control+Fn → עברית")
+                                .font(VITypography.rowValue)
+                                .foregroundStyle(.secondary)
                         }
                     }
-                }
-                .padding(.vertical, 2)
 
-                LabeledContent("") {
-                    Text(installedModelsText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    SettingsRow("Режимы") {
+                        Text("Фиксированные")
+                            .font(VITypography.rowValue)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    SettingsShortcutRow(
+                        title: "Обучение правок",
+                        shortcut: "⌃ ⌃"
+                    )
                 }
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityHidden(true)
-                .padding(.vertical, 2)
+
+                SettingsSection("Модель") {
+                    SettingsRow("Активная модель") {
+                        Text(activeModelTitle)
+                            .font(VITypography.rowValue)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let qualityWarningText = modelQualityWarningText {
+                        WarningCallout(
+                            title: "Низкая точность",
+                            message: qualityWarningText
+                        )
+                    }
+
+                    SettingsRow("Размер") {
+                        Text(modelSizeBadgeText ?? "—")
+                            .font(VITypography.rowValue)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    SettingsRow("Установлено") {
+                        Text(installedModelsText)
+                            .font(VITypography.rowHint)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                SettingsSection("Качество") {
+                    SettingsPickerRow(
+                        title: "Режим качества",
+                        selection: qualityModeBinding,
+                        options: QualityMode.allCases,
+                        optionTitle: { qualityTitle($0) }
+                    )
+
+                    SettingsPickerRow(
+                        title: "Лимит диктовки",
+                        selection: $maxRecordingSeconds,
+                        options: recordingLimitOptions,
+                        optionTitle: { "\(Int($0)) сек" }
+                    )
+                }
             }
+            .padding(VISpacing.xl)
+            .frame(width: VIConstants.settingsWidth, alignment: .leading)
         }
-        .formStyle(.grouped)
-        .padding(24)
     }
 
-    private var modelsTab: some View {
-        Form {
-            Section {
-                ModelsSettingsView(manager: modelManager)
-                    .padding(.vertical, 2)
+    private var settingsFooter: some View {
+        HStack {
+            Spacer()
+            Button("Quit") {
+                NSApp.terminate(nil)
             }
+            .keyboardShortcut("q", modifiers: [.command])
         }
-        .formStyle(.grouped)
-        .padding(24)
-    }
-
-    private var statsTab: some View {
-        Form {
-            Section("Статистика") {
-                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                    statsGridRow("Сегодня", formattedStatsValue(seconds: viewModel.snapshot.stats.todaySeconds, words: viewModel.snapshot.stats.todayWords))
-                    statsGridRow("Неделя", viewModel.snapshot.stats.hasWeeklyAggregate ? formattedStatsValue(seconds: viewModel.snapshot.stats.weekSeconds, words: viewModel.snapshot.stats.weekWords) : "—")
-                    statsGridRow("Месяц", viewModel.snapshot.stats.hasMonthlyAggregate ? formattedStatsValue(seconds: viewModel.snapshot.stats.monthSeconds, words: viewModel.snapshot.stats.monthWords) : "—")
-                    statsGridRow("Всего", viewModel.snapshot.stats.hasTotalAggregate ? formattedDuration(viewModel.snapshot.stats.totalSeconds) : "—")
-                }
-
-                Text("\(viewModel.snapshot.stats.sessions) диктовок • \(viewModel.snapshot.stats.words) слов")
-                    .foregroundStyle(.secondary)
-
-                Button("Сбросить статистику", role: .destructive) {
-                    viewModel.resetStats()
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .formStyle(.grouped)
-        .padding(24)
+        .padding(.horizontal, VISpacing.xl)
+        .padding(.vertical, VISpacing.m)
+        .background(.ultraThinMaterial)
     }
 
     private var activeModelTitle: String {
@@ -392,44 +381,81 @@ struct SettingsView: View {
         return "≈ \(descriptor.approxSizeMB) MB"
     }
 
+    private var modelQualityWarningText: String? {
+        guard modelManager.installedDescriptors.count == 1,
+              let descriptor = modelManager.activeModelDescriptor,
+              descriptor.id == TranscribeModel.smallQ8.rawValue else {
+            return nil
+        }
+        return "Сейчас установлена только Small q8_0. Она самая быстрая, но заметно хуже распознает смешанный RU/EN и короткие слова. Для лучшей точности лучше Medium или Large v3 Turbo."
+    }
+
     private var installedModelsText: String {
         let count = modelManager.installedModelIDs.count
         if count == 1 {
-            return "Установлена 1 модель"
+            return "1 модель"
         }
-        return "Установлено \(count) моделей"
+        return "\(count) моделей"
     }
 
-    private func statsGridRow(_ title: String, _ value: String) -> some View {
-        GridRow {
-            Text(title)
-            Text(value).monospacedDigit()
-        }
+    private var qualityModeBinding: Binding<QualityMode> {
+        Binding(
+            get: { QualityMode(rawValue: qualityMode) ?? .balanced },
+            set: { newValue in
+                qualityMode = newValue.rawValue
+            }
+        )
     }
 
-    private func formattedStatsValue(seconds: Double, words: Int) -> String {
-        return "\(formattedDuration(seconds)) • \(words.formatted()) слов"
+    private func qualityTitle(_ mode: QualityMode) -> String {
+        switch mode {
+        case .fast:
+            return "Fast"
+        case .balanced:
+            return "Balanced"
+        case .high:
+            return "High"
+        }
     }
 
     private func syncStorageFromSnapshot() {
         launchAtLogin = viewModel.snapshot.launchAtLoginEnabled
-        hotkey = viewModel.snapshot.selectedHotkey
+        showsMenuBarIcon = viewModel.snapshot.showsMenuBarIcon
         selectedModelID = viewModel.snapshot.selectedModelID
-        languageMode = viewModel.snapshot.selectedLanguageMode
     }
+}
 
-    private func formattedDuration(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let secs = total % 60
+private struct WarningCallout: View {
+    let title: String
+    let message: String
 
-        if hours > 0 {
-            return "\(hours)ч \(String(format: "%02d", minutes))м"
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.system(size: 16, weight: .semibold))
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(VITypography.rowLabel)
+                    .foregroundStyle(.primary)
+                Text(message)
+                    .font(VITypography.rowHint)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
         }
-        if minutes > 0 {
-            return "\(minutes)м \(String(format: "%02d", secs))с"
-        }
-        return "\(secs)с"
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.orange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.orange.opacity(0.20), lineWidth: 1)
+        )
     }
 }

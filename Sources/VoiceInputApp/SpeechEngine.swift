@@ -12,7 +12,7 @@ enum TranscriptionPass {
     case final
 }
 
-struct TranscriptionOutput {
+struct TranscriptionOutput: Codable {
     let text: String
     let detectedLanguageCode: String?
     let confidence: Float
@@ -28,10 +28,6 @@ actor SpeechEngine {
     private var adaptiveLanguageHint: String?
     private var languageStreakCode: String?
     private var languageStreakCount: Int = 0
-
-    func warmup(modelPath: String) async throws {
-        try ensureContext(modelPath: modelPath)
-    }
 
     func transcribe(
         samples: [Float],
@@ -59,14 +55,36 @@ actor SpeechEngine {
         }
 
         let hint = resolveHint(for: languageMode)
+        let initialPrompt = languageMode.whisperInitialPrompt
         let qualityMode = currentQualityMode()
         var params = makeParams(pass: pass, qualityMode: qualityMode)
 
+        if languageMode == .russianEnglish {
+            // Bilingual dictation works better when Whisper does not lock onto
+            // whichever language was detected most recently.
+            params.no_context = true
+        }
+
+        if languageMode == .hebrew {
+            // Hebrew works better when Whisper is allowed to auto-detect but is
+            // strongly steered by a Hebrew-only prompt.
+            params.no_context = true
+            if pass == .final {
+                params.beam_search.beam_size = max(params.beam_search.beam_size, 5)
+            } else {
+                params.greedy.best_of = max(params.greedy.best_of, 3)
+            }
+        }
+
         let copiedHint = hint.flatMap { strdup($0) }
+        let copiedPrompt = initialPrompt.flatMap { strdup($0) }
         var autoLanguage: UnsafeMutablePointer<CChar>?
         defer {
             if let copiedHint {
                 free(copiedHint)
+            }
+            if let copiedPrompt {
+                free(copiedPrompt)
             }
             if let autoLanguage {
                 free(autoLanguage)
@@ -80,6 +98,10 @@ actor SpeechEngine {
             autoLanguage = strdup("auto")
             params.language = UnsafePointer(autoLanguage)
             params.detect_language = true
+        }
+        if let copiedPrompt {
+            params.initial_prompt = UnsafePointer(copiedPrompt)
+            params.carry_initial_prompt = true
         }
 
         let rc = samples.withUnsafeBufferPointer { ptr in
@@ -158,8 +180,11 @@ actor SpeechEngine {
         unloadContext()
 
         var cparams = whisper_context_default_params()
-        cparams.use_gpu = true
-        cparams.flash_attn = true
+        // Homebrew whisper-cpp + ggml currently trips a backend assert on some
+        // beta macOS builds during device initialization. Keep CPU path as the
+        // stable baseline so the app can launch and transcribe reliably.
+        cparams.use_gpu = false
+        cparams.flash_attn = false
         cparams.gpu_device = 0
 
         guard let ctx = whisper_init_from_file_with_params(modelPath, cparams) else {
@@ -201,8 +226,12 @@ actor SpeechEngine {
         switch mode {
         case .auto:
             return adaptiveLanguageHint
-        case .russian, .english, .hebrew:
+        case .russianEnglish:
+            return nil
+        case .russian, .english:
             return mode.whisperLanguageCode
+        case .hebrew:
+            return nil
         }
     }
 

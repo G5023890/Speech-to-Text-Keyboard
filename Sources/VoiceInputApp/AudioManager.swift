@@ -3,12 +3,21 @@ import Foundation
 
 final class AudioManager {
     static let targetSampleRate: Double = 16_000
-    // Keep a longer rolling window so long PTT phrases are not truncated.
-    static let maxSeconds: Double = 20.0
+    // Keep a larger rolling window; active dictation limit is applied at snapshot time.
+    static let maxBufferSeconds: Double = 60.0
+
+    private final class InputBufferBox: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+        var consumed = false
+
+        init(buffer: AVAudioPCMBuffer) {
+            self.buffer = buffer
+        }
+    }
 
     private let engine = AVAudioEngine()
     private let processingQueue = DispatchQueue(label: "voiceinput.audio.processing")
-    private let ringBuffer = RingBuffer(capacity: Int(targetSampleRate * maxSeconds))
+    private let ringBuffer = RingBuffer(capacity: Int(targetSampleRate * maxBufferSeconds))
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private(set) var isRunning: Bool = false
@@ -51,9 +60,17 @@ final class AudioManager {
         isRunning = false
     }
 
-    func snapshotSpeechSamples() -> [Float] {
-        let raw = ringBuffer.snapshot()
-        guard !raw.isEmpty else { return [] }
+    func snapshotSpeechSamples(maxSeconds: Double = 20.0) -> [Float] {
+        let rawFull = ringBuffer.snapshot()
+        guard !rawFull.isEmpty else { return [] }
+        let clampedSeconds = max(3.0, min(maxSeconds, Self.maxBufferSeconds))
+        let maxSamples = Int(Self.targetSampleRate * clampedSeconds)
+        let raw: [Float]
+        if rawFull.count > maxSamples {
+            raw = Array(rawFull.suffix(maxSamples))
+        } else {
+            raw = rawFull
+        }
         let trimmed = trimSilence(raw)
         // Fallback to raw audio if VAD is too aggressive for current mic gain/noise floor.
         let selected = trimmed.count >= 800 ? trimmed : raw
@@ -68,16 +85,16 @@ final class AudioManager {
             return
         }
 
-        var consumed = false
+        let bufferBox = InputBufferBox(buffer: buffer)
         var error: NSError?
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if consumed {
+            if bufferBox.consumed {
                 outStatus.pointee = .noDataNow
                 return nil
             }
-            consumed = true
+            bufferBox.consumed = true
             outStatus.pointee = .haveData
-            return buffer
+            return bufferBox.buffer
         }
 
         _ = converter.convert(to: converted, error: &error, withInputFrom: inputBlock)

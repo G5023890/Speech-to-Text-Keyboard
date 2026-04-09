@@ -4,5 +4,6 @@ dist/
 .runtime/
 .checkpoints/
 .DS_Store
+Voice Input.xcodeproj/
 **/.DS_Store
 models/*.bin
