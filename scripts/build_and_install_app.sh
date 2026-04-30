@@ -20,6 +20,9 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp ".build/release/$EXEC_NAME" "$APP_PATH/Contents/MacOS/$EXEC_NAME"
 cp "$INFO_PLIST" "$APP_PATH/Contents/Info.plist"
 cp "$ENTITLEMENTS" "$APP_PATH/Contents/Resources/STT.entitlements"
+if [[ -f "$ROOT_DIR/Resources/AppIcon.icns" ]]; then
+  cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
+fi
 
 if [[ -x "$ROOT_DIR/Vendor/whisper.cpp/build/bin/whisper-cli" ]]; then
   cp "$ROOT_DIR/Vendor/whisper.cpp/build/bin/whisper-cli" "$APP_PATH/Contents/Resources/whisper-cli"
