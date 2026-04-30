@@ -5,3 +5,5 @@ Vendor/whisper.cpp/
 *.xcuserdata/
 DerivedData/
 .DS_Store
+*.download
+*.zip

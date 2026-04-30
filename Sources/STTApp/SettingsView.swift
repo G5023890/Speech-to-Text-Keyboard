@@ -118,20 +118,38 @@ struct SettingsView: View {
                 }
 
                 ForEach(WhisperModel.allCases) { model in
-                    HStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(model.displayName)
+                                Text(manager.isInstalled(model) ? "Installed" : model.filename)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                Task { try? await manager.download(model) }
+                            } label: {
+                                Label(manager.isInstalled(model) ? "Ready" : "Download", systemImage: manager.isInstalled(model) ? "checkmark.circle" : "arrow.down.circle")
+                            }
+                            .disabled(manager.downloadProgress != nil || manager.isInstalled(model))
+                        }
+
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(model.displayName)
-                            Text(manager.isInstalled(model) ? "Installed" : model.filename)
+                            HStack {
+                                Text("Core ML Encoder")
+                                Spacer()
+                                Button {
+                                    Task { try? await manager.downloadCoreMLEncoder(for: model) }
+                                } label: {
+                                    Label(manager.isCoreMLInstalled(model) ? "Installed" : "Download", systemImage: manager.isCoreMLInstalled(model) ? "bolt.badge.checkmark" : "bolt.badge.clock")
+                                }
+                                .disabled(manager.coreMLDownloadProgress != nil || manager.isCoreMLInstalled(model))
+                            }
+                            Text(manager.isCoreMLInstalled(model) ? model.coreMLEncoderDirectoryName : "Optional ANE acceleration")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Spacer()
-                        Button {
-                            Task { try? await manager.download(model) }
-                        } label: {
-                            Label(manager.isInstalled(model) ? "Ready" : "Download", systemImage: manager.isInstalled(model) ? "checkmark.circle" : "arrow.down.circle")
-                        }
-                        .disabled(manager.downloadProgress != nil || manager.isInstalled(model))
                     }
                 }
 
@@ -139,6 +157,14 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         ProgressView(value: progress)
                         Text("Downloading \(Int(progress * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let progress = manager.coreMLDownloadProgress {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView(value: progress)
+                        Text("Downloading Core ML encoder \(Int(progress * 100))%")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -165,7 +191,7 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             RuntimeRow(title: "Engine", value: "whisper.cpp CLI")
-            RuntimeRow(title: "Acceleration", value: "Metal enabled, Core ML optional later")
+            RuntimeRow(title: "Acceleration", value: "Metal + optional Core ML encoder fallback")
             RuntimeRow(title: "Privacy", value: "No history, temporary audio deleted")
         }
         .panelStyle()

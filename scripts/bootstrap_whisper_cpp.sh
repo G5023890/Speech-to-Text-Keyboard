@@ -15,8 +15,8 @@ fi
 
 cmake -S "$WHISPER_DIR" -B "$WHISPER_DIR/build" \
   -DGGML_METAL=ON \
-  -DGGML_COREML=OFF \
-  -DWHISPER_COREML=OFF \
+  -DWHISPER_COREML=ON \
+  -DWHISPER_COREML_ALLOW_FALLBACK=ON \
   -DCMAKE_BUILD_TYPE=Release
 
 cmake --build "$WHISPER_DIR/build" --config Release -j"$(sysctl -n hw.ncpu)"

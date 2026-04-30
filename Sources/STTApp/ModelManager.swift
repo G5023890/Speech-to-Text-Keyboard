@@ -27,12 +27,25 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     var downloadURL: URL {
         URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)")!
     }
+
+    var coreMLEncoderDirectoryName: String {
+        filename.replacingOccurrences(of: ".bin", with: "-encoder.mlmodelc")
+    }
+
+    var coreMLEncoderZipName: String {
+        "\(coreMLEncoderDirectoryName).zip"
+    }
+
+    var coreMLEncoderDownloadURL: URL {
+        URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(coreMLEncoderZipName)")!
+    }
 }
 
 @MainActor
 final class ModelManager: ObservableObject {
     @Published private(set) var selectedModel: WhisperModel = .small
     @Published private(set) var downloadProgress: Double?
+    @Published private(set) var coreMLDownloadProgress: Double?
     @Published private(set) var lastError: String?
 
     private let fileManager = FileManager.default
@@ -50,8 +63,17 @@ final class ModelManager: ObservableObject {
         modelsDirectory.appendingPathComponent((model ?? selectedModel).filename)
     }
 
+    func coreMLEncoderPath(for model: WhisperModel? = nil) -> URL {
+        modelsDirectory.appendingPathComponent((model ?? selectedModel).coreMLEncoderDirectoryName, isDirectory: true)
+    }
+
     func isInstalled(_ model: WhisperModel) -> Bool {
         fileManager.fileExists(atPath: path(for: model).path)
+    }
+
+    func isCoreMLInstalled(_ model: WhisperModel) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: coreMLEncoderPath(for: model).path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     func installedModels() -> [WhisperModel] {
@@ -91,6 +113,97 @@ final class ModelManager: ObservableObject {
             downloadProgress = nil
             lastError = error.localizedDescription
             throw error
+        }
+    }
+
+    func downloadCoreMLEncoder(for model: WhisperModel) async throws {
+        lastError = nil
+        coreMLDownloadProgress = 0
+        try fileManager.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
+
+        let destination = coreMLEncoderPath(for: model)
+        if isCoreMLInstalled(model) {
+            coreMLDownloadProgress = nil
+            return
+        }
+
+        let zipURL = modelsDirectory.appendingPathComponent(model.coreMLEncoderZipName).appendingPathExtension("download")
+        let unpackDirectory = modelsDirectory.appendingPathComponent("coreml-\(UUID().uuidString)", isDirectory: true)
+        try? fileManager.removeItem(at: zipURL)
+        try? fileManager.removeItem(at: unpackDirectory)
+
+        do {
+            try await FileDownloader.download(from: model.coreMLEncoderDownloadURL, to: zipURL) { [weak self] progress in
+                Task { @MainActor in
+                    self?.coreMLDownloadProgress = progress * 0.85
+                }
+            }
+            try fileManager.createDirectory(at: unpackDirectory, withIntermediateDirectories: true)
+            try unzip(zipURL: zipURL, destination: unpackDirectory)
+
+            guard let unpacked = try findCoreMLEncoder(named: model.coreMLEncoderDirectoryName, in: unpackDirectory) else {
+                throw ModelManagerError.coreMLEncoderMissing(model.coreMLEncoderDirectoryName)
+            }
+
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+            try fileManager.moveItem(at: unpacked, to: destination)
+            coreMLDownloadProgress = nil
+        } catch {
+            try? fileManager.removeItem(at: zipURL)
+            try? fileManager.removeItem(at: unpackDirectory)
+            coreMLDownloadProgress = nil
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    private func unzip(zipURL: URL, destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-q", zipURL.path, "-d", destination.path]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: data, encoding: .utf8) ?? "Unknown unzip error"
+            throw ModelManagerError.unzipFailed(message)
+        }
+    }
+
+    private func findCoreMLEncoder(named directoryName: String, in root: URL) throws -> URL? {
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        for case let url as URL in enumerator {
+            guard url.lastPathComponent == directoryName else { continue }
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+            if values.isDirectory == true {
+                return url
+            }
+        }
+        return nil
+    }
+}
+
+enum ModelManagerError: LocalizedError {
+    case coreMLEncoderMissing(String)
+    case unzipFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .coreMLEncoderMissing(let name):
+            return "Downloaded archive did not contain \(name)."
+        case .unzipFailed(let message):
+            return "Could not unpack Core ML encoder: \(message)"
         }
     }
 }
