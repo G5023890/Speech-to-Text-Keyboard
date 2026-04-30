@@ -1,0 +1,7 @@
+.build/
+.codex/
+dist/
+Vendor/whisper.cpp/
+*.xcuserdata/
+DerivedData/
+.DS_Store
