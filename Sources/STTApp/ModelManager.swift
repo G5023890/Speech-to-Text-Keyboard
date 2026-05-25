@@ -2,7 +2,6 @@ import Foundation
 
 enum WhisperModel: String, CaseIterable, Identifiable {
     case small
-    case medium
 
     var id: String { rawValue }
 
@@ -10,8 +9,6 @@ enum WhisperModel: String, CaseIterable, Identifiable {
         switch self {
         case .small:
             return "Whisper Small"
-        case .medium:
-            return "Whisper Medium"
         }
     }
 
@@ -19,8 +16,6 @@ enum WhisperModel: String, CaseIterable, Identifiable {
         switch self {
         case .small:
             return "ggml-small.bin"
-        case .medium:
-            return "ggml-medium.bin"
         }
     }
 

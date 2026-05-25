@@ -8,10 +8,12 @@ protocol TranscriptionEngine {
 @MainActor
 final class WhisperCLITranscriptionEngine: TranscriptionEngine {
     private let modelManager: ModelManager
+    private let trainingStore: TrainingStore
     private let fileManager = FileManager.default
 
-    init(modelManager: ModelManager) {
+    init(modelManager: ModelManager, trainingStore: TrainingStore) {
         self.modelManager = modelManager
+        self.trainingStore = trainingStore
     }
 
     func transcribe(audioURL: URL, profile: DictationProfile, useVAD: Bool) async throws -> String {
@@ -27,7 +29,7 @@ final class WhisperCLITranscriptionEngine: TranscriptionEngine {
     }
 
     private func runWhisper(audioURL: URL, profile: DictationProfile, useVAD: Bool) async throws -> String {
-        let modelURL = modelManager.path()
+        let modelURL = trainingStore.selectedTrainedModelURL() ?? modelManager.path()
         guard fileManager.fileExists(atPath: modelURL.path) else {
             throw TranscriptionError.modelMissing(modelManager.selectedModel.displayName)
         }

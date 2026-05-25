@@ -10,14 +10,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var settingsWindow: NSWindow?
     private var hotkeyService: HotkeyService?
     private lazy var audioCapture = AudioCaptureService()
+    private lazy var trainingAudioCapture = AudioCaptureService()
     private lazy var modelManager = ModelManager()
-    private lazy var transcriptionEngine = WhisperCLITranscriptionEngine(modelManager: modelManager)
+    private lazy var trainingStore = TrainingStore()
+    private lazy var transcriptionEngine = WhisperCLITranscriptionEngine(modelManager: modelManager, trainingStore: trainingStore)
     private lazy var textInsertion = TextInsertionService()
+    private var trainingReviewWindow: NSWindow?
+    private var trainingCaptureProfile: DictationProfile?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
         appState.modelManager = modelManager
+        appState.trainingStore = trainingStore
         appState.refreshPermissions()
 
         hotkeyService = HotkeyService(
@@ -30,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 Task { @MainActor in
                     await self?.finishRecording(profile: profile)
                 }
+            },
+            onTrainingToggle: { [weak self] in
+                Task { @MainActor in
+                    await self?.toggleTrainingCapture()
+                }
             }
         )
         hotkeyService?.start()
@@ -38,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         hotkeyService?.stop()
         audioCapture.cancel()
+        trainingAudioCapture.cancel()
     }
 
     private func configureStatusItem() {
@@ -54,9 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let downloadSmallItem = NSMenuItem(title: "Download Small Model", action: #selector(downloadSmallModel), keyEquivalent: "")
         downloadSmallItem.target = self
         menu.addItem(downloadSmallItem)
-        let downloadMediumItem = NSMenuItem(title: "Download Medium Model", action: #selector(downloadMediumModel), keyEquivalent: "")
-        downloadMediumItem.target = self
-        menu.addItem(downloadMediumItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
@@ -77,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             symbol = "waveform"
         case .recording:
             symbol = "mic.fill"
+        case .trainingRecording:
+            symbol = "record.circle.fill"
         case .transcribing:
             symbol = "text.bubble.fill"
         case .error:
@@ -120,10 +130,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func downloadSmallModel() {
         Task { await download(model: .small) }
-    }
-
-    @objc private func downloadMediumModel() {
-        Task { await download(model: .medium) }
     }
 
     private func download(model: WhisperModel) async {
@@ -186,6 +192,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 appState.statusMessage = "Inserted \(result.count) characters"
             }
             appState.phase = .idle
+        } catch {
+            appState.phase = .error(error.localizedDescription)
+            appState.statusMessage = error.localizedDescription
+        }
+    }
+
+    private func toggleTrainingCapture() async {
+        switch appState.phase {
+        case .trainingRecording(let profile):
+            await finishTrainingRecording(profile: profile)
+        case .idle, .error:
+            await startTrainingRecording(profile: appState.trainingProfile)
+        default:
+            break
+        }
+    }
+
+    private func startTrainingRecording(profile: DictationProfile) async {
+        appState.refreshPermissions()
+
+        guard appState.microphonePermission == .granted else {
+            await PermissionService.requestMicrophoneAccess()
+            appState.refreshPermissions()
+            return
+        }
+
+        do {
+            trainingCaptureProfile = profile
+            appState.phase = .trainingRecording(profile)
+            appState.statusMessage = "Training capture \(profile.displayName)"
+            try trainingAudioCapture.start()
+        } catch {
+            appState.phase = .error(error.localizedDescription)
+            appState.statusMessage = error.localizedDescription
+        }
+    }
+
+    private func finishTrainingRecording(profile: DictationProfile) async {
+        appState.phase = .transcribing(profile)
+        appState.statusMessage = "Preparing training example"
+
+        do {
+            let audioURL = try trainingAudioCapture.stop()
+            let transcript = try await transcriptionEngine.transcribe(
+                audioURL: audioURL,
+                profile: profile,
+                useVAD: false
+            )
+            openTrainingReview(audioURL: audioURL, profile: profile, initialTranscript: transcript)
+            appState.phase = .idle
+            appState.statusMessage = "Review training example"
+        } catch {
+            appState.phase = .error(error.localizedDescription)
+            appState.statusMessage = error.localizedDescription
+        }
+    }
+
+    private func openTrainingReview(audioURL: URL, profile: DictationProfile, initialTranscript: String) {
+        let view = TrainingReviewView(
+            profile: profile,
+            initialTranscript: initialTranscript,
+            onSave: { [weak self] transcript in
+                Task { @MainActor in
+                    self?.saveTrainingExample(audioURL: audioURL, transcript: transcript, profile: profile)
+                }
+            },
+            onCancel: { [weak self] in
+                Task { @MainActor in
+                    try? FileManager.default.removeItem(at: audioURL)
+                    self?.trainingReviewWindow?.close()
+                    self?.trainingReviewWindow = nil
+                    self?.appState.statusMessage = "Training example discarded"
+                }
+            }
+        )
+
+        let window = NSWindow(contentViewController: NSHostingController(rootView: view.frame(width: 560, height: 360)))
+        window.title = "Review Training Example"
+        window.setContentSize(NSSize(width: 560, height: 360))
+        window.styleMask = [.titled, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        trainingReviewWindow = window
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func saveTrainingExample(audioURL: URL, transcript: String, profile: DictationProfile) {
+        do {
+            try trainingStore.saveExample(
+                audioURL: audioURL,
+                transcript: transcript,
+                profile: profile,
+                modelName: trainingStore.selectedTrainedModel?.displayName ?? modelManager.selectedModel.displayName
+            )
+            trainingReviewWindow?.close()
+            trainingReviewWindow = nil
+            appState.statusMessage = "Training example saved"
         } catch {
             appState.phase = .error(error.localizedDescription)
             appState.statusMessage = error.localizedDescription

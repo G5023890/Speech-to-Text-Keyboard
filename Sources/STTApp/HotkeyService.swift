@@ -3,17 +3,22 @@ import AppKit
 @MainActor
 final class HotkeyService {
     typealias Handler = (DictationProfile) -> Void
+    typealias TrainingHandler = () -> Void
 
     private let onStart: Handler
     private let onStop: Handler
+    private let onTrainingToggle: TrainingHandler
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var activeProfile: DictationProfile?
     private var pendingMixedStart: Task<Void, Never>?
+    private var lastControlTapDate: Date?
+    private var controlWasDown = false
 
-    init(onStart: @escaping Handler, onStop: @escaping Handler) {
+    init(onStart: @escaping Handler, onStop: @escaping Handler, onTrainingToggle: @escaping TrainingHandler) {
         self.onStart = onStart
         self.onStop = onStop
+        self.onTrainingToggle = onTrainingToggle
     }
 
     func start() {
@@ -35,6 +40,7 @@ final class HotkeyService {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        handleTrainingControlTap(flags: flags)
         let profile = profile(for: flags)
 
         if let activeProfile {
@@ -91,5 +97,22 @@ final class HotkeyService {
 
     private func profile(for flags: NSEvent.ModifierFlags) -> DictationProfile? {
         Self.profile(for: flags)
+    }
+
+    private func handleTrainingControlTap(flags: NSEvent.ModifierFlags) {
+        let isControlOnly = flags == .control
+        if isControlOnly, !controlWasDown {
+            let now = Date()
+            if let lastControlTapDate, now.timeIntervalSince(lastControlTapDate) <= 0.38 {
+                self.lastControlTapDate = nil
+                onTrainingToggle()
+            } else {
+                lastControlTapDate = now
+            }
+        }
+        controlWasDown = isControlOnly
+        if !flags.isEmpty, !isControlOnly {
+            lastControlTapDate = nil
+        }
     }
 }

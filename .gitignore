@@ -2,6 +2,7 @@
 .codex/
 dist/
 Vendor/whisper.cpp/
+Vendor/executorch/
 *.xcuserdata/
 DerivedData/
 .DS_Store

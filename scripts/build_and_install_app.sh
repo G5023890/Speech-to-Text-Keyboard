@@ -39,10 +39,19 @@ fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $EXEC_NAME" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_PATH/Contents/Info.plist"
 
-SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F '\"' '/Apple Development/ { print $2; exit }')"
+SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F '\"' '/Developer ID Application/ { print $2; exit }')"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F '\"' '/Apple Development/ { print $2; exit }')"
+fi
 if [[ -n "$SIGN_IDENTITY" ]]; then
+  while IFS= read -r binary; do
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$binary"
+  done < <(find "$APP_PATH/Contents/Resources" -type f \( -name '*.dylib' -o -name 'whisper-cli' \))
   codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_PATH"
 else
+  while IFS= read -r binary; do
+    codesign --force --options runtime --sign - "$binary"
+  done < <(find "$APP_PATH/Contents/Resources" -type f \( -name '*.dylib' -o -name 'whisper-cli' \))
   codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" --sign - "$APP_PATH"
 fi
 
@@ -51,3 +60,4 @@ cp -R "$APP_PATH" "$INSTALL_PATH"
 
 echo "Installed $INSTALL_PATH"
 echo "Bundle id: $BUNDLE_ID"
+echo "Signed with: ${SIGN_IDENTITY:-ad-hoc}"

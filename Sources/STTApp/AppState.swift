@@ -4,6 +4,7 @@ import Foundation
 enum AppPhase: Equatable {
     case idle
     case recording(DictationProfile)
+    case trainingRecording(DictationProfile)
     case transcribing(DictationProfile)
     case error(String)
 
@@ -27,8 +28,10 @@ final class AppState: ObservableObject {
     @Published var microphonePermission: MicrophonePermission = .unknown
     @Published var accessibilityTrusted = false
     @Published var activeProfile: DictationProfile = .mixedRuEn
+    @Published var trainingProfile: DictationProfile = .mixedRuEn
     @Published var useVAD = false
     @Published var modelManager: ModelManager?
+    @Published var trainingStore: TrainingStore?
 
     var cancellables = Set<AnyCancellable>()
 

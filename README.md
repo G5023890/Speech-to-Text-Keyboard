@@ -57,3 +57,15 @@ When this folder exists beside `ggml-small.bin`, the Core ML-enabled `whisper.cp
 
 This is a local-development milestone, not a notarized distribution build.
 The default bootstrap uses Metal and Core ML with fallback enabled. Core ML only activates when the matching `*-encoder.mlmodelc` artifact exists beside the selected `.bin` model.
+
+## Training
+
+Use double-tap `Control` to start training capture and double-tap `Control` again to stop. The app opens a review window; audio is saved only after the transcript is corrected and confirmed.
+
+The app uses Whisper Small as its only built-in base model. Training examples and imported trained models live under:
+
+```text
+~/Library/Application Support/LocalSTT/Training
+```
+
+See `docs/training_pipeline.md` for the external fine-tune/export/import flow.

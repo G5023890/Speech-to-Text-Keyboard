@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @ObservedObject var appState: AppState
@@ -10,6 +12,7 @@ struct SettingsView: View {
                 permissionPanel
                 hotkeyPanel
                 modelPanel
+                trainingPanel
                 runtimePanel
             }
             .padding(24)
@@ -197,10 +200,92 @@ struct SettingsView: View {
         .panelStyle()
     }
 
+    private var trainingPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Training")
+                .font(.headline)
+
+            Picker("Capture profile", selection: $appState.trainingProfile) {
+                ForEach(DictationProfile.allCases) { profile in
+                    Text(profile.displayName).tag(profile)
+                }
+            }
+
+            Text("Double-tap Control to start training capture, double-tap Control again to stop and review.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let store = appState.trainingStore {
+                RuntimeRow(title: "RU+EN examples", value: "\(store.counts.count(for: .mixedRuEn))")
+                RuntimeRow(title: "Hebrew examples", value: "\(store.counts.count(for: .hebrew))")
+
+                if store.trainedModels.isEmpty {
+                    Text("No trained models imported.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Toggle("Use trained model", isOn: Binding(
+                        get: { store.useTrainedModel },
+                        set: { store.useTrainedModel = $0 }
+                    ))
+                    Picker("Trained model", selection: Binding(
+                        get: { store.selectedTrainedModelID ?? "" },
+                        set: { store.selectedTrainedModelID = $0.isEmpty ? nil : $0 }
+                    )) {
+                        ForEach(store.trainedModels) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    }
+                }
+
+                HStack {
+                    Button {
+                        do {
+                            _ = try store.exportDataset()
+                        } catch {
+                            appState.phase = .error(error.localizedDescription)
+                            appState.statusMessage = error.localizedDescription
+                        }
+                    } label: {
+                        Label("Export Dataset", systemImage: "square.and.arrow.up")
+                    }
+
+                    Button {
+                        importTrainedModel(store: store)
+                    } label: {
+                        Label("Import Trained Model", systemImage: "tray.and.arrow.down")
+                    }
+
+                    Spacer()
+
+                    Button(role: .destructive) {
+                        do {
+                            try store.resetTraining()
+                            appState.statusMessage = "Training data reset"
+                        } catch {
+                            appState.phase = .error(error.localizedDescription)
+                            appState.statusMessage = error.localizedDescription
+                        }
+                    } label: {
+                        Label("Reset Training", systemImage: "trash")
+                    }
+                }
+
+                if let message = store.lastMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .panelStyle()
+    }
+
     private var phaseLabel: String {
         switch appState.phase {
         case .idle: return "Idle"
         case .recording: return "Recording"
+        case .trainingRecording: return "Training"
         case .transcribing: return "Transcribing"
         case .error: return "Error"
         }
@@ -210,6 +295,7 @@ struct SettingsView: View {
         switch appState.phase {
         case .idle: return .green.opacity(0.16)
         case .recording: return .red.opacity(0.18)
+        case .trainingRecording: return .purple.opacity(0.18)
         case .transcribing: return .blue.opacity(0.18)
         case .error: return .orange.opacity(0.18)
         }
@@ -220,6 +306,36 @@ struct SettingsView: View {
             return .red
         }
         return .secondary
+    }
+}
+
+private extension SettingsView {
+    func importTrainedModel(store: TrainingStore) {
+        let modelPanel = NSOpenPanel()
+        modelPanel.title = "Select fine-tuned ggml model"
+        modelPanel.canChooseDirectories = false
+        modelPanel.canChooseFiles = true
+        modelPanel.allowsMultipleSelection = false
+        modelPanel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
+
+        guard modelPanel.runModal() == .OK, let modelURL = modelPanel.url else { return }
+
+        let encoderPanel = NSOpenPanel()
+        encoderPanel.title = "Select optional Core ML encoder"
+        encoderPanel.canChooseDirectories = true
+        encoderPanel.canChooseFiles = false
+        encoderPanel.allowsMultipleSelection = false
+        encoderPanel.prompt = "Import"
+        encoderPanel.message = "Choose a matching .mlmodelc folder, or cancel to import only the .bin model."
+        let encoderURL = encoderPanel.runModal() == .OK ? encoderPanel.url : nil
+
+        do {
+            try store.importTrainedModel(modelURL: modelURL, coreMLEncoderURL: encoderURL)
+            appState.statusMessage = "Imported trained model"
+        } catch {
+            appState.phase = .error(error.localizedDescription)
+            appState.statusMessage = error.localizedDescription
+        }
     }
 }
 
