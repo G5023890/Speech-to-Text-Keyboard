@@ -13,7 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private lazy var trainingAudioCapture = AudioCaptureService()
     private lazy var modelManager = ModelManager()
     private lazy var trainingStore = TrainingStore()
-    private lazy var transcriptionEngine = WhisperCLITranscriptionEngine(modelManager: modelManager, trainingStore: trainingStore)
+    private lazy var languageSettings = LanguageSettings()
+    private lazy var transcriptionEngine = WhisperCLITranscriptionEngine(modelManager: modelManager, trainingStore: trainingStore, languageSettings: languageSettings)
     private lazy var textInsertion = TextInsertionService()
     private var trainingReviewWindow: NSWindow?
     private var trainingCaptureProfile: DictationProfile?
@@ -23,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         configureStatusItem()
         appState.modelManager = modelManager
         appState.trainingStore = trainingStore
+        appState.languageSettings = languageSettings
         appState.refreshPermissions()
 
         hotkeyService = HotkeyService(

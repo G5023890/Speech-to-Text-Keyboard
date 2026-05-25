@@ -32,6 +32,7 @@ final class AppState: ObservableObject {
     @Published var useVAD = false
     @Published var modelManager: ModelManager?
     @Published var trainingStore: TrainingStore?
+    @Published var languageSettings: LanguageSettings?
 
     var cancellables = Set<AnyCancellable>()
 

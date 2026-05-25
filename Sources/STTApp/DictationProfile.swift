@@ -9,18 +9,9 @@ enum DictationProfile: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .mixedRuEn:
-            return "RU+EN"
+            return "Primary"
         case .hebrew:
-            return "Hebrew"
-        }
-    }
-
-    var whisperLanguageArgument: String? {
-        switch self {
-        case .mixedRuEn:
-            return "auto"
-        case .hebrew:
-            return "he"
+            return "Secondary"
         }
     }
 

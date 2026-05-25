@@ -84,25 +84,78 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Hotkeys")
                 .font(.headline)
-            ForEach(DictationProfile.allCases) { profile in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(profile.displayName)
-                            .font(.body.weight(.medium))
-                        Text("Hold \(profile.hotkeyDescription), speak, release to insert.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text(profile.hotkeyDescription)
-                        .font(.system(.caption, design: .monospaced).weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .glassIfAvailable(tint: .blue.opacity(0.12))
-                }
+
+            hotkeyLanguageRow(
+                title: "Primary",
+                subtitle: "Hold Fn + Shift, speak, release to insert.",
+                hotkey: DictationProfile.mixedRuEn.hotkeyDescription,
+                language: "Auto",
+                picker: nil
+            )
+
+            if let languageSettings = appState.languageSettings {
+                hotkeyLanguageRow(
+                    title: "Secondary",
+                    subtitle: "Hold Fn + Shift + Control, speak, release to insert.",
+                    hotkey: DictationProfile.hebrew.hotkeyDescription,
+                    language: languageSettings.secondaryLanguage.displayName,
+                    picker: AnyView(
+                        Picker("", selection: Binding(
+                            get: { languageSettings.secondaryLanguageCode },
+                            set: { languageSettings.secondaryLanguageCode = $0 }
+                        )) {
+                            ForEach(WhisperLanguage.practicalSmallLanguages) { language in
+                                Text(language.displayName).tag(language.code)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 170)
+                    )
+                )
+            } else {
+                hotkeyLanguageRow(
+                    title: "Secondary",
+                    subtitle: "Hold Fn + Shift + Control, speak, release to insert.",
+                    hotkey: DictationProfile.hebrew.hotkeyDescription,
+                    language: "Hebrew",
+                    picker: nil
+                )
             }
         }
         .panelStyle()
+    }
+
+    private func hotkeyLanguageRow(
+        title: String,
+        subtitle: String,
+        hotkey: String,
+        language: String,
+        picker: AnyView?
+    ) -> some View {
+        HStack {
+            VStack(alignment: .leading) {
+                Text(title)
+                    .font(.body.weight(.medium))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(hotkey)
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .glassIfAvailable(tint: .blue.opacity(0.12))
+                if let picker {
+                    picker
+                } else {
+                    Text(language)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var modelPanel: some View {
@@ -207,7 +260,7 @@ struct SettingsView: View {
 
             Picker("Capture profile", selection: $appState.trainingProfile) {
                 ForEach(DictationProfile.allCases) { profile in
-                    Text(profile.displayName).tag(profile)
+                    Text(trainingProfileLabel(profile)).tag(profile)
                 }
             }
 
@@ -216,8 +269,8 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
             if let store = appState.trainingStore {
-                RuntimeRow(title: "RU+EN examples", value: "\(store.counts.count(for: .mixedRuEn))")
-                RuntimeRow(title: "Hebrew examples", value: "\(store.counts.count(for: .hebrew))")
+                RuntimeRow(title: "Primary examples", value: "\(store.counts.count(for: .mixedRuEn))")
+                RuntimeRow(title: "Secondary examples", value: "\(store.counts.count(for: .hebrew))")
 
                 if store.trainedModels.isEmpty {
                     Text("No trained models imported.")
@@ -306,6 +359,15 @@ struct SettingsView: View {
             return .red
         }
         return .secondary
+    }
+
+    private func trainingProfileLabel(_ profile: DictationProfile) -> String {
+        switch profile {
+        case .mixedRuEn:
+            return "Primary (Auto)"
+        case .hebrew:
+            return "Secondary (\(appState.languageSettings?.secondaryLanguage.displayName ?? "Hebrew"))"
+        }
     }
 }
 

@@ -9,11 +9,13 @@ protocol TranscriptionEngine {
 final class WhisperCLITranscriptionEngine: TranscriptionEngine {
     private let modelManager: ModelManager
     private let trainingStore: TrainingStore
+    private let languageSettings: LanguageSettings
     private let fileManager = FileManager.default
 
-    init(modelManager: ModelManager, trainingStore: TrainingStore) {
+    init(modelManager: ModelManager, trainingStore: TrainingStore, languageSettings: LanguageSettings) {
         self.modelManager = modelManager
         self.trainingStore = trainingStore
+        self.languageSettings = languageSettings
     }
 
     func transcribe(audioURL: URL, profile: DictationProfile, useVAD: Bool) async throws -> String {
@@ -56,9 +58,7 @@ final class WhisperCLITranscriptionEngine: TranscriptionEngine {
             arguments.append("--vad")
         }
 
-        if let language = profile.whisperLanguageArgument {
-            arguments += ["-l", language]
-        }
+        arguments += ["-l", languageSettings.language(for: profile).code]
 
         let process = Process()
         process.executableURL = executable

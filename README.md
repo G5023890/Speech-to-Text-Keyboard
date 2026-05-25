@@ -7,10 +7,10 @@ Native macOS menu bar dictation app for Apple Silicon. The app records only whil
 - Menu bar app with idle, recording, training, transcribing, and error states.
 - Built-in base model: **Whisper Small only**.
 - RU+EN mixed dictation profile with Whisper language auto-detection.
-- Hebrew-only dictation profile with `language=he`.
+- Configurable secondary dictation profile.
 - Global hotkeys:
-  - `Fn + Shift`: hold to dictate RU+EN.
-  - `Fn + Shift + Control`: hold to dictate Hebrew.
+  - `Fn + Shift`: hold to dictate with `Auto`.
+  - `Fn + Shift + Control`: hold to dictate with the selected secondary language.
   - double-tap `Control`: toggle training capture.
 - Microphone permission flow.
 - Accessibility permission flow for inserting recognized text into the active app.
@@ -81,6 +81,19 @@ Download the Core ML encoder from Settings or run:
 ```
 
 When the encoder folder exists beside `ggml-small.bin`, the Core ML-enabled `whisper.cpp` build loads it automatically. If it is missing or fails to load, `WHISPER_COREML_ALLOW_FALLBACK` keeps transcription on the regular Metal path.
+
+## Language Settings
+
+The primary hotkey path is fixed to Whisper `Auto` because `whisper.cpp` accepts one forced language per run, not a two-language pair.
+
+The secondary hotkey path is configurable in Settings. Available options:
+
+```text
+Auto, Russian, English, Hebrew, Ukrainian, French, Spanish, German,
+Italian, Polish, Portuguese, Dutch, Turkish, Arabic, Chinese, Japanese, Korean
+```
+
+The selected value is persisted in `UserDefaults` and passed to `whisper-cli` as `-l <code>`.
 
 ## Training Workflow
 
