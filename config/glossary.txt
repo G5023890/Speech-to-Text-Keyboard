@@ -1,0 +1,17 @@
+# One term per line. Lines starting with # are ignored.
+# Add product names, contacts, slang, abbreviations, transliterations.
+
+Codex
+ChatGPT
+Whisper
+Hammerspoon
+Voice Input
+
+# Russian examples
+Григорий Мордохович
+распознавание речи
+горячая клавиша
+
+# Hebrew examples
+זיהוי דיבור
+קלט קולי
