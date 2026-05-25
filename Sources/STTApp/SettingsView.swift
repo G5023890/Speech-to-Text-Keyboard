@@ -242,8 +242,8 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Runtime")
                 .font(.headline)
-            Toggle("Use VAD before transcription", isOn: $appState.useVAD)
-            Text("VAD is experimental with the current whisper.cpp Metal build; if it fails, transcription retries without VAD.")
+            Toggle("Use VAD for every transcription", isOn: $appState.useVAD)
+            Text("VAD turns on automatically for recordings longer than \(Int(appState.longDictationVADThreshold)) seconds. This toggle forces VAD for short recordings too. If VAD fails, transcription retries without VAD.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             RuntimeRow(title: "Engine", value: "whisper.cpp CLI")

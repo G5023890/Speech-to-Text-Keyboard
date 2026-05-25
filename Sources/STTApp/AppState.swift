@@ -34,6 +34,8 @@ final class AppState: ObservableObject {
     @Published var trainingStore: TrainingStore?
     @Published var languageSettings: LanguageSettings?
 
+    let longDictationVADThreshold: TimeInterval = 8
+
     var cancellables = Set<AnyCancellable>()
 
     func refreshPermissions() {

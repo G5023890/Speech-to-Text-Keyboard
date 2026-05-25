@@ -17,7 +17,7 @@ Native macOS menu bar dictation app for Apple Silicon. The app records only whil
 - Local model manager for `ggml-small.bin`.
 - Optional Core ML encoder download for `ggml-small-encoder.mlmodelc`.
 - `whisper.cpp` runtime with Metal and Core ML fallback support.
-- VAD toggle with automatic retry without VAD if the current Metal/VAD path fails.
+- VAD auto-enabled for long recordings, with an optional force-VAD toggle and automatic retry without VAD if the current Metal/VAD path fails.
 - No transcription history. Temporary dictation audio is deleted after transcription.
 
 ## Build And Install
@@ -156,5 +156,5 @@ After notarization, Gatekeeper should report `source=Notarized Developer ID`.
 
 - Target environment: Apple Silicon macOS.
 - Current app style follows Apple Liquid Glass where available.
-- VAD remains experimental in this build because the current `whisper.cpp` Metal/VAD path has been observed to fail on the target machine.
+- VAD remains experimental in this build. It is enabled automatically for recordings longer than 8 seconds, can be forced for all recordings in Settings, and falls back to non-VAD transcription if it fails.
 - The app does not train on-device. It exports reviewed examples for external GPU fine-tuning and imports the resulting `.bin` plus optional `.mlmodelc`.

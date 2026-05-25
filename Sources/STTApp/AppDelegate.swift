@@ -178,20 +178,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appState.statusMessage = "Transcribing \(profile.displayName)"
 
         do {
-            let audioURL = try audioCapture.stop()
-            defer { try? FileManager.default.removeItem(at: audioURL) }
+            let recording = try audioCapture.stop()
+            defer { try? FileManager.default.removeItem(at: recording.url) }
+            let useVAD = appState.useVAD || recording.duration >= appState.longDictationVADThreshold
 
             let result = try await transcriptionEngine.transcribe(
-                audioURL: audioURL,
+                audioURL: recording.url,
                 profile: profile,
-                useVAD: appState.useVAD
+                useVAD: useVAD
             )
 
             if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 appState.statusMessage = "No speech detected"
             } else {
                 try textInsertion.insert(result)
-                appState.statusMessage = "Inserted \(result.count) characters"
+                appState.statusMessage = useVAD
+                    ? "Inserted \(result.count) characters with VAD"
+                    : "Inserted \(result.count) characters"
             }
             appState.phase = .idle
         } catch {
@@ -236,13 +239,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appState.statusMessage = "Preparing training example"
 
         do {
-            let audioURL = try trainingAudioCapture.stop()
+            let recording = try trainingAudioCapture.stop()
             let transcript = try await transcriptionEngine.transcribe(
-                audioURL: audioURL,
+                audioURL: recording.url,
                 profile: profile,
                 useVAD: false
             )
-            openTrainingReview(audioURL: audioURL, profile: profile, initialTranscript: transcript)
+            openTrainingReview(audioURL: recording.url, profile: profile, initialTranscript: transcript)
             appState.phase = .idle
             appState.statusMessage = "Review training example"
         } catch {

@@ -1,6 +1,11 @@
 import AVFoundation
 import Foundation
 
+struct RecordedAudio {
+    let url: URL
+    let duration: TimeInterval
+}
+
 @MainActor
 final class AudioCaptureService: NSObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
@@ -35,14 +40,15 @@ final class AudioCaptureService: NSObject, AVAudioRecorderDelegate {
         currentURL = url
     }
 
-    func stop() throws -> URL {
+    func stop() throws -> RecordedAudio {
         guard let recorder, let url = currentURL else {
             throw AudioCaptureError.noActiveRecording
         }
+        let duration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
         currentURL = nil
-        return url
+        return RecordedAudio(url: url, duration: duration)
     }
 
     func cancel() {
